@@ -5,8 +5,9 @@ import path from 'node:path'
 import { HttpError, fail } from './store.mjs'
 
 const equal = (a, b) => { const x = Buffer.from(String(a || '')), y = Buffer.from(String(b || '')); return x.length === y.length && timingSafeEqual(x, y) }
-export function createAuthorityServer(store, { secureCookie = false, staticDirectory } = {}) {
+export function createAuthorityServer(store, { secureCookie = false, staticDirectory, allowedOrigins = [] } = {}) {
   const attempts = new Map()
+  const trustedOrigins = new Set(allowedOrigins.map(value => { try { const url = new URL(value); if (!['http:','https:'].includes(url.protocol) || url.username || url.password) throw new Error(); return url.origin } catch { fail('后台允许来源配置格式错误') } }))
   return createServer(async (request, response) => {
     response.setHeader('X-Content-Type-Options', 'nosniff'); response.setHeader('X-Frame-Options', 'DENY'); response.setHeader('Referrer-Policy', 'same-origin')
     response.setHeader('Cache-Control', 'no-store')
@@ -17,7 +18,14 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
       if (['POST', 'PUT', 'PATCH'].includes(method)) {
         if (request.headers.origin) {
           let origin; try { origin = new URL(request.headers.origin) } catch { fail('请求来源不正确', 403) }
-          if (!['http:', 'https:'].includes(origin.protocol) || origin.host !== request.headers.host) fail('请求来源不匹配', 403)
+          if (!['http:', 'https:'].includes(origin.protocol)) fail('请求来源不匹配', 403)
+          if (trustedOrigins.size) {
+            if (!trustedOrigins.has(origin.origin)) fail('请求来源不匹配', 403)
+          } else {
+            const forwarded = String(request.headers['x-forwarded-host'] || '').split(',', 1)[0].trim()
+            const expectedHost = forwarded || request.headers.host
+            if (!expectedHost || origin.host !== expectedHost) fail('请求来源不匹配', 403)
+          }
         }
         if (!String(request.headers['content-type'] || '').startsWith('application/json')) fail('请求必须为 JSON', 415)
         let size = 0, chunks = []

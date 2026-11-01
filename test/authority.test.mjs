@@ -88,3 +88,11 @@ test('login attempts are limited and internal errors do not disclose signing mat
  assert(!JSON.stringify(store.lists()).includes('PRIVATE KEY'))
  }finally{await new Promise(resolve=>server.close(resolve));store.close()}
 })
+test('trusted public origin works behind a reverse proxy that rewrites Host',async()=>{
+ const {store}=fixture(),server=createAuthorityServer(store,{allowedOrigins:['https://auth.kk520yy.com']});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const base='http://127.0.0.1:'+server.address().port
+ try{
+  const body=JSON.stringify({username:'owner',password:ownerPassword})
+  let response=await fetch(base+'/api/login',{method:'POST',headers:{'Content-Type':'application/json',Host:'127.0.0.1',Origin:'https://auth.kk520yy.com'},body});assert.equal(response.status,200)
+  response=await fetch(base+'/api/login',{method:'POST',headers:{'Content-Type':'application/json',Host:'127.0.0.1',Origin:'https://untrusted.example'},body});assert.equal(response.status,403)
+ }finally{await new Promise(resolve=>server.close(resolve));store.close()}
+})

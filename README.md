@@ -58,7 +58,7 @@ Git 忽略本地配置、私钥、数据库、授权文件及构建产物。公�
 
 ## Docker
 
-镜像使用 Node.js 24。将状态目录挂载至 `/app/data`，以容器运行用户可读写的权限初始化；首次运行初始化命令生成 `/app/data/operator.env`，之后以该配置启动。反向代理需保留原始 Host 并使用 HTTPS，线上设置 `COOKIE_SECURE=true`，Cookie 才会仅经 HTTPS 传输。不要直接将预览服务公开到互联网。
+镜像使用 Node.js 24。将状态目录挂载至 `/app/data`，以容器运行用户可读写的权限初始化；首次运行初始化命令生成 `/app/data/operator.env`，之后以该配置启动。反向代理需保留原始 Host，或配置 `AUTHORITY_ALLOWED_ORIGINS=https://实际授权域名`，并使用 HTTPS；线上设置 `COOKIE_SECURE=true`，Cookie 才会仅经 HTTPS 传输。不要直接将预览服务公开到互联网。
 
 见 `deploy/compose.yml`。该配置默认仅绑定本机 17441；上线前检查实际端口和域名，不与客户服务复用端口。
 
