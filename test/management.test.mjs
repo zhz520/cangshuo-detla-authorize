@@ -1,0 +1,78 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import {generateKeyPairSync,randomUUID,verify} from 'node:crypto'
+import {AuthorityStore} from '../server/store.mjs'
+import {Releases,releaseItems} from '../server/releases.mjs'
+import {Mailer} from '../server/mail.mjs'
+
+function setup(){
+ const {privateKey}=generateKeyPairSync('ed25519',{privateKeyEncoding:{type:'pkcs8',format:'pem'}})
+ const store=new AuthorityStore({database:':memory:',privateKey,ownerUsername:'owner',ownerPassword:'Only-a-test-password-2026'})
+ store.createCustomer({id:'a',name:'客户A'},'owner');store.createCustomer({id:'b',name:'客户B'},'owner')
+ const project=store.management.saveProject(null,{customerId:'a',productId:'detla',name:'项目A',maintenanceUntil:'2028-12-01T00:00:00Z',notificationEmail:'customer@example.com'},'owner').id
+ const instance=randomUUID();store.createInstance({id:instance,customerId:'a',projectId:project,name:'实例A',domains:['a.example.com']},'owner')
+ return {store,project,instance,close:()=>store.close()}
+}
+test('projects isolate products, repositories and customer instances',()=>{
+ const f=setup(),{store}=f;try{
+  store.management.saveProduct(null,{id:'shop',name:'商城',kind:'MINIAPP',repository:'owner/shop'},'owner')
+  const project=store.management.saveProject(null,{customerId:'b',productId:'shop',name:'商城项目',maintenanceUntil:'2029-01-01T00:00:00Z'},'owner').id
+  assert.throws(()=>store.createInstance({id:randomUUID(),customerId:'a',projectId:project,name:'越权',domains:['a.example.com']},'owner'),/不匹配/)
+  assert.throws(()=>store.releaseService.create({productId:'shop',version:'1.0.0',channel:'stable',notes:'说明',sourceUrl:'https://github.com/zhz520/cangshuo-detla/releases/tag/v1.0.0'},'owner'),/客户端仓库/)
+  assert(!store.lists().plugins.some(row=>['aliyun_sms','wechat_miniapp'].includes(row.id)))
+  const identity=store.management.identity(f.instance,'owner');assert.equal(store.reportVersion(identity,'1.0.0').instanceId,f.instance)
+ }finally{f.close()}
+})
+test('maintenance renewal synchronizes all project instances and reissues matching licenses',()=>{
+ const f=setup(),{store,project,instance}=f;try{
+  store.updateModule('advanced_income_reports',{priceCents:100,termDays:365,status:'ACTIVE'},'owner')
+  const order=store.createOrder({instanceId:instance,moduleId:'advanced_income_reports'},'owner');store.grantMaintenance(order.id,{note:'test'},'owner');const first=store.issue(order.id,'owner').envelope
+  store.management.saveProject(project,{name:'项目A',maintenanceUntil:'2029-01-01T00:00:00Z',pausePolicy:'STOP_ALL'},'owner')
+  const report=store.reportVersion(first,'1.1.0'), claims=JSON.parse(Buffer.from(report.license.payload,'base64url')), projectClaims=JSON.parse(Buffer.from(report.project.payload,'base64url'))
+  assert.equal(claims.expiresAt,'2029-01-01T00:00:00.000Z');assert.equal(claims.expiresAt,projectClaims.maintenanceUntil)
+  assert(verify(null,Buffer.from(report.license.format+'.'+report.license.payload),store.publicKey,Buffer.from(report.license.signature,'base64url')))
+  assert.equal(store.reportVersion(first,'1.1.0').license.payload,report.license.payload)
+  store.management.saveProject(project,{name:'项目A',maintenanceUntil:'2020-01-01T00:00:00Z',pausePolicy:'STOP_ALL'},'owner')
+  assert.equal(store.lists().projects[0].effective_status,'EXPIRED')
+  assert.equal(JSON.parse(Buffer.from(store.reportVersion(first,'1.1.0').project.payload,'base64url')).maintenanceUntil,'2020-01-01T00:00:00.000Z')
+ }finally{f.close()}
+})
+test('GitHub sync excludes previews and compares every higher semantic version for the correct product',async()=>{
+ const f=setup(),{store}=f;try{
+  const release=(version,prerelease=false)=>({tag_name:'v'+version,body:'test',html_url:'https://github.com/zhz520/cangshuo-detla/releases/tag/v'+version,published_at:'2026-10-31T00:00:00Z',prerelease,assets:[]})
+  const service=new Releases(store,{fetcher:async()=>new Response(JSON.stringify([release('1.1.0'),release('1.10.0'),release('1.2.0'),release('2.0.0-preview.1',true)]))})
+  await service.sync('detla',true);const result=store.management.clientUpdates('detla','1.1.0')
+  assert.deepEqual(result.releases.map(row=>row.version),['1.2.0','1.10.0']);assert.equal(result.latestVersion,'1.10.0');assert.equal(result.updateAvailable,true)
+  const unavailable=new Releases(store,{fetcher:async()=>new Response('{}',{status:503})});await assert.rejects(unavailable.sync('detla',true));assert.equal(store.management.clientUpdates('detla','1.1.0').latestVersion,'1.10.0')
+ }finally{f.close()}
+})
+test('SMTP credentials are masked and failed notification delivery is retried without leaking secrets',async()=>{
+ const f=setup(),{store}=f;try{
+  store.management.saveMailSettings({enabled:true,host:'smtp.example.com',port:465,security:'TLS',username:'sender@example.com',password:'fake-secret',from:'sender@example.com',operatorEmail:'ops@example.com'},'owner')
+  assert(!JSON.stringify(store.lists()).includes('fake-secret'))
+  const mailer=new Mailer(store,{transportFactory:()=>({sendMail:async()=>{throw Object.assign(new Error('sensitive fake-secret'),{code:'EAUTH'})}})})
+  mailer.test({recipient:'recipient@example.com'},'owner');await mailer.process();let row=store.lists().mailQueue[0];assert.equal(row.status,'RETRY');assert.equal(row.attempts,1);assert.equal(row.last_error,'EAUTH')
+  mailer.retry(row.id,'owner');mailer.factory=()=>({sendMail:async()=>({accepted:['recipient@example.com'],rejected:[]})});await mailer.process();row=store.lists().mailQueue[0];assert.equal(row.status,'SENT')
+  store.management.saveMailSettings({...store.management.mailSettings(),password:''},'owner');assert.equal(store.management.mailSettings(true).password,'fake-secret')
+ }finally{f.close()}
+})
+test('expiry reminders are deduplicated and do not send to other customers',()=>{
+ const f=setup(),{store,project}=f;try{
+  const at=Date.parse('2028-11-24T12:00:00Z');store.management.scheduleNotifications(at);store.management.scheduleNotifications(at)
+  const rows=store.lists().mailQueue;assert.equal(rows.length,1);assert.equal(rows[0].recipient,'customer@example.com');assert.equal(rows[0].project_id,project)
+ }finally{f.close()}
+})
+test('update plans lock required dependencies, validate packages and reject unpaid modules',()=>{
+ const f=setup(),{store,instance}=f;try{
+  const identity=store.management.identity(instance,'owner')
+  store.releaseService.create({version:'1.2.0',channel:'stable',notes:'test',sourceUrl:'https://github.com/zhz520/cangshuo-detla/releases/tag/v1.2.0',items:[{id:'security',name:'安全修复',component:'backend',required:true},{id:'admin_ui',name:'后台更新',component:'admin',requires:['security']}]},'owner')
+  store.releaseService.publish('detla','1.2.0','owner')
+  assert.throws(()=>store.releaseService.plan({license:identity,version:'1.1.0',selection:['1.2.0:admin_ui']}),/校验值/)
+  const assets=['backend','admin'].map(component=>({name:`cangshuo-${component}.zip`,url:`https://github.com/zhz520/cangshuo-detla/releases/download/v1.2.0/cangshuo-${component}.zip`,size:100,digest:'sha256:'+'a'.repeat(64)}))
+  store.db.prepare('UPDATE release_catalog SET assets=?').run(JSON.stringify(assets))
+  let plan=store.releaseService.plan({license:identity,version:'1.1.0',selection:['1.2.0:admin_ui']});let claims=JSON.parse(Buffer.from(plan.payload,'base64url'));assert.equal(claims.packages.length,2);assert.deepEqual(claims.items.map(item=>item.id),['security','admin_ui'])
+  store.releaseService.configureItems('detla','1.2.0',{items:[{id:'paid',name:'付费模块',component:'admin',featureId:'advanced_income_reports'}]},'owner')
+  assert.throws(()=>store.releaseService.plan({license:identity,version:'1.1.0',selection:['1.2.0:paid']}),/购买/)
+  assert.throws(()=>releaseItems([{id:'a',name:'A',component:'backend',requires:['b']},{id:'b',name:'B',component:'backend',requires:['a']}]),/循环/)
+ }finally{f.close()}
+})

@@ -2,6 +2,8 @@ import { DatabaseSync } from 'node:sqlite'
 import { createHash, createPrivateKey, createPublicKey, randomBytes, randomUUID, scryptSync, sign, timingSafeEqual, verify } from 'node:crypto'
 import { mkdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
+import { Management, DEFAULT_PRODUCT } from './management.mjs'
+import { Releases } from './releases.mjs'
 
 export class HttpError extends Error { constructor(status, message) { super(message); this.status = status } }
 export const fail = (message, status = 400) => { throw new HttpError(status, message) }
@@ -81,10 +83,11 @@ export class AuthorityStore {
       if (!ownerUsername || !ownerPassword || ownerPassword.length < 16) throw new Error('首次启动必须配置独立的管理员账号和至少 16 字符密码')
       this.db.prepare('INSERT INTO owners VALUES (?,?)').run(ownerUsername, passwordHash(ownerPassword))
     }
-    this.db.prepare('INSERT OR IGNORE INTO modules VALUES (?,?,?,?,?,?,?)').run('advanced_income_reports', '收益对比分析', '客户侧已实现的等长周期收益对比及汇总导出模块。', null, 365, 'DRAFT', '1.1.0-preview.2')
+    this.db.prepare('INSERT OR IGNORE INTO modules(id,name,description,price_cents,term_days,status,min_version) VALUES (?,?,?,?,?,?,?)').run('advanced_income_reports', '收益对比分析', '客户侧已实现的等长周期收益对比及汇总导出模块。', null, 365, 'DRAFT', '1.1.0')
     const plugins = [
       ['wechat_pay','微信支付','支付','配置客户实例的微信支付商户参数，由运营后台集中维护。',[
-        {key:'appId',label:'关联小程序 AppID',type:'text',required:true},
+        {key:'appId',label:'支付关联 AppID',type:'text',required:true},
+        {key:'paymentMethods',label:'支付方式',type:'multiselect',options:['H5','JSAPI','NATIVE','APP'],required:true},
         {key:'merchantId',label:'商户号',type:'text',required:true},
         {key:'apiV3Key',label:'API v3 密钥',type:'password',required:true},
         {key:'merchantSerialNo',label:'商户证书序列号',type:'text',required:true},
@@ -111,10 +114,12 @@ export class AuthorityStore {
     ]
     const addPlugin = this.db.prepare('INSERT INTO plugins VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,category=excluded.category,description=excluded.description,config_schema=excluded.config_schema')
     for (const [id,name,category,description,schema] of plugins) addPlugin.run(id,name,category,description,JSON.stringify(schema),'ACTIVE',now())
+    this.management = new Management(this)
+    this.releaseService = new Releases(this)
   }
   close() { this.db.close() }
   audit(actor, action, target, detail = {}) { this.db.prepare('INSERT INTO audit(actor,action,target,detail,created_at) VALUES (?,?,?,?,?)').run(actor, action, target, JSON.stringify(detail), now()) }
-  transaction(action) { this.db.exec('BEGIN IMMEDIATE'); try { const value = action(); this.db.exec('COMMIT'); return value } catch (error) { this.db.exec('ROLLBACK'); throw error } }
+  transaction(action) { if(this.transactionDepth)return action(); this.db.exec('BEGIN IMMEDIATE');this.transactionDepth=1; try { const value = action(); this.db.exec('COMMIT'); return value } catch (error) { this.db.exec('ROLLBACK'); throw error } finally {this.transactionDepth=0} }
   session(token) {
     if (!token || token.length > 128) return null
     return this.db.prepare('SELECT username,csrf,expires_at FROM sessions WHERE token_hash=? AND expires_at>?').get(digest(token), Date.now()) || null
@@ -145,9 +150,10 @@ export class AuthorityStore {
       orders: this.db.prepare('SELECT o.*,i.customer_id,c.name AS customer_name,m.name AS module_name FROM orders o JOIN instances i ON i.id=o.instance_id JOIN customers c ON c.id=i.customer_id JOIN modules m ON m.id=o.module_id ORDER BY o.created_at DESC').all(),
       licenses: this.db.prepare('SELECT l.id,l.order_id,l.instance_id,l.issued_at,l.expires_at,i.customer_id,i.domains FROM licenses l JOIN instances i ON i.id=l.instance_id ORDER BY l.issued_at DESC').all().map(row => ({...row, domains: JSON.parse(row.domains || '[]')})),
       releases: this.db.prepare('SELECT * FROM releases ORDER BY created_at DESC').all(),
-      plugins: this.db.prepare('SELECT * FROM plugins ORDER BY category,id').all().map(row => ({...row, config_schema: JSON.parse(row.config_schema)})),
-      instancePlugins: this.db.prepare('SELECT * FROM instance_plugins ORDER BY instance_id,plugin_id').all().map(row => ({...row, enabled: row.enabled === 1, config: JSON.parse(row.config || '{}')})),
-      audit: this.db.prepare('SELECT * FROM audit ORDER BY id DESC LIMIT 200').all()
+      plugins: this.db.prepare("SELECT * FROM plugins WHERE status='ACTIVE' ORDER BY category,id").all().map(row => ({...row, config_schema: JSON.parse(row.config_schema)})),
+      instancePlugins: this.db.prepare("SELECT ip.* FROM instance_plugins ip JOIN plugins p ON p.id=ip.plugin_id WHERE p.status='ACTIVE' ORDER BY instance_id,plugin_id").all().map(row => ({...row, enabled: row.enabled === 1, config: JSON.parse(row.config || '{}')})),
+      audit: this.db.prepare('SELECT * FROM audit ORDER BY id DESC LIMIT 200').all(),
+      ...this.management.lists()
     }
   }
   createCustomer(body, actor) {
@@ -161,10 +167,16 @@ export class AuthorityStore {
     if (!customer || customer.status !== 'ACTIVE') fail('客户不存在或未启用')
     const name = text(body.name, '实例名称', 80)
     let domain = ''
-    const allowedDomains = domains(body.domains), maintenanceUntil = timestamp(body.maintenanceUntil, '维护期至')
+    const project = body.projectId ? this.db.prepare('SELECT * FROM projects WHERE id=? AND customer_id=?').get(body.projectId,customer.id) : null
+    if (body.projectId && !project) fail('所属项目与客户不匹配')
+    const allowedDomains = domains(body.domains), maintenanceUntil = timestamp(project?.maintenance_until || body.maintenanceUntil, '维护期至')
     if (Date.parse(maintenanceUntil) <= Date.now()) fail('维护期必须晚于当前时间')
     if (body.domain) { const host = domainName(body.domain, '客户后台地址'); domain = 'https://' + host }
-    return this.transaction(() => { this.db.prepare('INSERT INTO instances(id,customer_id,name,domain,domains,maintenance_until,client_version,last_seen_at,created_at) VALUES (?,?,?,?,?,?,?,?,?)').run(id, customer.id, name, domain, JSON.stringify(allowedDomains), maintenanceUntil, '', null, now()); this.audit(actor, 'CREATE_INSTANCE', id, { customerId: customer.id, domains: allowedDomains, maintenanceUntil }); return { id } })
+    return this.transaction(() => {
+      const projectId=project?.id || this.management.saveProject(null,{customerId:customer.id,productId:DEFAULT_PRODUCT,name,maintenanceUntil},actor).id
+      this.db.prepare('INSERT INTO instances(id,customer_id,name,domain,domains,maintenance_until,client_version,last_seen_at,created_at,project_id) VALUES (?,?,?,?,?,?,?,?,?,?)').run(id, customer.id, name, domain, JSON.stringify(allowedDomains), maintenanceUntil, '', null, now(),projectId)
+      this.audit(actor, 'CREATE_INSTANCE', id, { customerId: customer.id, domains: allowedDomains, maintenanceUntil }); return { id }
+    })
   }
   updateInstance(id, body, actor) {
     const instance = this.db.prepare('SELECT * FROM instances WHERE id=?').get(text(id, '实例编号', 36))
@@ -172,7 +184,13 @@ export class AuthorityStore {
     const name = text(body.name, '实例名称', 80)
     const allowedDomains = domains(body.domains), maintenanceUntil = timestamp(body.maintenanceUntil, '维护期至')
     if (Date.parse(maintenanceUntil) <= Date.now()) fail('维护期必须晚于当前时间')
-    return this.transaction(() => { this.db.prepare('UPDATE instances SET name=?,domains=?,maintenance_until=? WHERE id=?').run(name, JSON.stringify(allowedDomains), maintenanceUntil, id); this.audit(actor, 'UPDATE_INSTANCE', id, { domains: allowedDomains, maintenanceUntil }); return { id } })
+    return this.transaction(() => {
+      this.db.prepare('UPDATE instances SET name=?,domains=? WHERE id=?').run(name, JSON.stringify(allowedDomains), id)
+      this.db.prepare('UPDATE projects SET maintenance_until=? WHERE id=?').run(maintenanceUntil,instance.project_id)
+      this.db.prepare('UPDATE instances SET maintenance_until=? WHERE project_id=?').run(maintenanceUntil,instance.project_id)
+      for (const row of this.db.prepare('SELECT id FROM instances WHERE project_id=?').all(instance.project_id)) this.management.reconcileLicense(row.id)
+      this.audit(actor, 'UPDATE_INSTANCE', id, { domains: allowedDomains, maintenanceUntil }); return { id }
+    })
   }
   updateModule(id, body, actor) {
     if (!this.db.prepare('SELECT id FROM modules WHERE id=?').get(id)) fail('模块不存在', 404)
@@ -183,10 +201,11 @@ export class AuthorityStore {
   }
   createOrder(body, actor) {
     const instanceId = text(body.instanceId, '实例编号', 36), moduleId = identifier(body.moduleId, '模块编号')
-    const instance = this.db.prepare('SELECT i.*,c.status FROM instances i JOIN customers c ON c.id=i.customer_id WHERE i.id=?').get(instanceId)
+    const instance = this.db.prepare('SELECT i.*,c.status,p.product_id FROM instances i JOIN customers c ON c.id=i.customer_id JOIN projects p ON p.id=i.project_id WHERE i.id=?').get(instanceId)
     const module = this.db.prepare('SELECT * FROM modules WHERE id=?').get(moduleId)
     if (!instance || instance.status !== 'ACTIVE') fail('实例或客户不存在/已停用')
     if (!module || module.status !== 'ACTIVE' || module.price_cents == null) fail('模块尚未定价上架')
+    if (module.product_id !== instance.product_id) fail('该模块不属于此项目的软件')
     if (instance.client_version && compareVersions(instance.client_version, module.min_version) < 0) fail(`此模块要求客户端 ${module.min_version} 或更新版本，请先升级客户系统`, 409)
     if (!instance.maintenance_until || Date.parse(instance.maintenance_until) <= Date.now()) fail('请先设置有效的维护期，维护期是授权到期时间', 409)
     if (this.db.prepare("SELECT id FROM orders WHERE instance_id=? AND module_id=? AND status='UNPAID'").get(instanceId, moduleId)) fail('该实例已有此模块的待收款订单', 409)
@@ -245,11 +264,17 @@ export class AuthorityStore {
   updatePlugin(instanceId, pluginId, body, actor) {
     const instance = this.db.prepare('SELECT * FROM instances WHERE id=?').get(text(instanceId, '实例编号', 36))
     const plugin = this.db.prepare('SELECT * FROM plugins WHERE id=?').get(identifier(pluginId, '插件编号'))
-    if (!instance || !plugin) fail('实例或插件不存在', 404)
+    if (!instance || !plugin || plugin.status!=='ACTIVE') fail('实例或插件不存在', 404)
     if (typeof body.enabled !== 'boolean' || !body.config || typeof body.config !== 'object' || Array.isArray(body.config)) fail('插件启用状态或配置格式不正确')
     const schema = JSON.parse(plugin.config_schema), allowed = new Set(schema.map(field => field.key)), clean = {}
     for (const [key,value] of Object.entries(body.config)) {
       if (!allowed.has(key)) fail(`插件配置包含未知字段：${key}`)
+      const field=schema.find(field=>field.key===key)
+      if (field.type==='multiselect') {
+        if (!Array.isArray(value) || value.length>field.options.length || new Set(value).size!==value.length || value.some(item=>!field.options.includes(item))) fail('支付方式选择不正确')
+        if (value.length) clean[key]=value
+        continue
+      }
       if (typeof value !== 'string' || value.length > 5000) fail(`插件配置 ${key} 格式不正确`)
       if (value.trim()) clean[key] = value.trim()
     }
@@ -262,12 +287,13 @@ export class AuthorityStore {
     })
   }
   reportVersion(license, version) {
-    if (!license || license.format !== 'delta-license-v1' || typeof license.payload !== 'string' || typeof license.signature !== 'string') fail('客户端授权信息无效', 401)
+    if (!license || !['delta-license-v1','cangshuo-instance-v1'].includes(license.format) || typeof license.payload !== 'string' || license.payload.length>24000 || typeof license.signature !== 'string' || license.signature.length>128) fail('客户端授权信息无效', 401)
     version = text(version, '客户端版本', 80); compareVersions(version, version)
-    if (!verify(null, Buffer.from('delta-license-v1.' + license.payload), this.publicKey, Buffer.from(license.signature, 'base64url'))) fail('客户端授权签名无效', 401)
+    if (!verify(null, Buffer.from(license.format+'.' + license.payload), this.publicKey, Buffer.from(license.signature, 'base64url'))) fail('客户端授权签名无效', 401)
     let claims
     try { claims = JSON.parse(Buffer.from(license.payload, 'base64url')) } catch { fail('客户端授权内容无效', 401) }
-    if (claims.instanceId == null || claims.customerId == null || (claims.expiresAt && Date.parse(claims.expiresAt) <= Date.now())) fail('客户端授权已失效', 401)
+    // A signed expired identity can still check renewal; it never grants expired business access.
+    if (claims.instanceId == null || claims.customerId == null) fail('客户端授权已失效', 401)
     const instance = this.db.prepare('SELECT * FROM instances WHERE id=?').get(claims.instanceId)
     if (!instance || instance.customer_id !== claims.customerId) fail('授权实例不存在或客户不匹配', 403)
     const reportedAt = now()
@@ -275,25 +301,9 @@ export class AuthorityStore {
       this.db.prepare('UPDATE instances SET client_version=?,last_seen_at=? WHERE id=?').run(version, reportedAt, instance.id)
       if (instance.client_version !== version) this.audit('client', 'CLIENT_VERSION_REPORT', instance.id, { from: instance.client_version, to: version })
     })
-    return { accepted: true, instanceId: instance.id, version, reportedAt }
+    return { accepted: true, instanceId: instance.id, version, reportedAt, ...this.management.clientResponse(instance.id,version) }
   }
-  createRelease(body, actor) {
-    const version = text(body.version, '版本号', 80)
-    if (!/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(version)) fail('版本号须为语义版本格式')
-    if (!['preview', 'stable'].includes(body.channel)) fail('发布通道不正确')
-    const notes = text(body.notes, '更新说明', 4000), source = text(body.sourceUrl, 'GitHub Release 地址', 500)
-    let url; try { url = new URL(source) } catch { fail('GitHub Release 地址不正确') }
-    if (url.origin !== 'https://github.com' || !url.pathname.startsWith('/zhz520/cangshuo-detla/releases/tag/') || url.username || url.password) fail('请选择客户端仓库中的 GitHub Release 地址')
-    return this.transaction(() => { this.db.prepare('INSERT INTO releases(version,channel,notes,source_url,created_at) VALUES (?,?,?,?,?)').run(version, body.channel, notes, url.href, now()); this.audit(actor, 'CREATE_RELEASE_DRAFT', version); return { version } })
-  }
-  publishRelease(version, actor) {
-    return this.transaction(() => {
-      const row = this.db.prepare('SELECT * FROM releases WHERE version=?').get(version)
-      if (!row) fail('版本不存在', 404)
-      if (row.status === 'PUBLISHED') return { version }
-      this.db.prepare("UPDATE releases SET status='PUBLISHED',published_at=? WHERE version=?").run(now(), version)
-      this.audit(actor, 'PUBLISH_RELEASE_METADATA', version); return { version }
-    })
-  }
-  publishedReleases() { return this.db.prepare("SELECT version,channel,notes,source_url,published_at FROM releases WHERE status='PUBLISHED' ORDER BY published_at DESC").all() }
+  createRelease(body, actor) { return this.releaseService.create(body,actor) }
+  publishRelease(version, actor) { return this.releaseService.publish(DEFAULT_PRODUCT,version,actor) }
+  publishedReleases(productId=DEFAULT_PRODUCT) { return this.db.prepare("SELECT version,channel,notes,source_url,published_at,items FROM release_catalog WHERE product_id=? AND status='PUBLISHED' AND channel='stable'").all(productId).sort((a,b)=>compareVersions(b.version,a.version)) }
 }

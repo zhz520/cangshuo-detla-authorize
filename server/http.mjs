@@ -3,9 +3,12 @@ import { timingSafeEqual } from 'node:crypto'
 import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { HttpError, fail } from './store.mjs'
+import { DEFAULT_PRODUCT } from './management.mjs'
+import { Mailer } from './mail.mjs'
 
 const equal = (a, b) => { const x = Buffer.from(String(a || '')), y = Buffer.from(String(b || '')); return x.length === y.length && timingSafeEqual(x, y) }
 export function createAuthorityServer(store, { secureCookie = false, staticDirectory, allowedOrigins = [] } = {}) {
+  const mailer = new Mailer(store)
   const attempts = new Map()
   const trustedOrigins = new Set(allowedOrigins.map(value => { try { const url = new URL(value); if (!['http:','https:'].includes(url.protocol) || url.username || url.password) throw new Error(); return url.origin } catch { fail('后台允许来源配置格式错误') } }))
   return createServer(async (request, response) => {
@@ -35,8 +38,12 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
       }
       if (route === '/health' && method === 'GET') return json({ ok: true, service: 'cangshuo-detla-authorize' })
       if (route === '/api/client/report' && method === 'POST') {
-        return json(store.reportVersion(body.license, body.version))
+        const claims=store.reportVersion(body.license, body.version)
+        store.management.updateNotification(claims.instanceId,body.updateResult)
+        try { await store.releaseService.sync(JSON.parse(Buffer.from(claims.project.payload,'base64url')).productId) } catch {}
+        return json({...claims,updates:store.management.clientUpdates(JSON.parse(Buffer.from(claims.project.payload,'base64url')).productId,body.version)})
       }
+      if(route==='/api/client/update-plan' && method==='POST')return json(store.releaseService.plan(body))
       const token = (request.headers.cookie || '').split(';').map(value => value.trim()).find(value => value.startsWith('authority_session='))?.slice(18)
       if (route === '/api/login' && method === 'POST') {
         const bucket = String(request.socket.remoteAddress), time = Date.now()
@@ -62,8 +69,19 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
         if (route === '/api/customers' && method === 'POST') return json(store.createCustomer(body, session.username), 201)
         if (route === '/api/instances' && method === 'POST') return json(store.createInstance(body, session.username), 201)
         if (route === '/api/orders' && method === 'POST') return json(store.createOrder(body, session.username), 201)
-        if (route === '/api/releases' && method === 'POST') return json(store.createRelease(body, session.username), 201)
+        if (route === '/api/releases' && method === 'POST') return json(store.releaseService.create(body, session.username), 201)
+        if (route === '/api/products' && method === 'POST') return json(store.management.saveProduct(null,body,session.username),201)
+        if (route === '/api/modules' && method === 'POST') return json(store.management.saveModule(body,session.username),201)
+        if (route === '/api/projects' && method === 'POST') return json(store.management.saveProject(null,body,session.username),201)
+        if (route === '/api/mail/settings' && method === 'PUT') return json(store.management.saveMailSettings(body,session.username))
+        if (route === '/api/mail/test' && method === 'POST') return json(mailer.test(body,session.username))
         let match
+        if ((match=route.match(/^\/api\/products\/([\w-]+)$/)) && method==='PUT') return json(store.management.saveProduct(match[1],body,session.username))
+        if ((match=route.match(/^\/api\/projects\/([a-f\d-]+)$/)) && method==='PUT') return json(store.management.saveProject(match[1],body,session.username))
+        if ((match=route.match(/^\/api\/instances\/([a-f\d-]+)\/identity$/)) && method==='GET') return json(store.management.identity(match[1],session.username))
+        if ((match=route.match(/^\/api\/products\/([\w-]+)\/sync$/)) && method==='POST') return json(await store.releaseService.sync(match[1],true))
+        if ((match=route.match(/^\/api\/mail\/([a-f\d-]+)\/retry$/)) && method==='POST') return json(mailer.retry(match[1],session.username))
+        if ((match=route.match(/^\/api\/products\/([\w-]+)\/releases\/([^/]+)\/items$/)) && method==='PUT') return json(store.releaseService.configureItems(match[1],decodeURIComponent(match[2]),body,session.username))
         if ((match = route.match(/^\/api\/instances\/([a-f\d-]+)$/)) && method === 'PUT') return json(store.updateInstance(match[1], body, session.username))
         if ((match = route.match(/^\/api\/modules\/([\w-]+)$/)) && method === 'PUT') return json(store.updateModule(match[1], body, session.username))
         if ((match = route.match(/^\/api\/instances\/([a-f\d-]+)\/plugins\/([\w-]+)$/)) && method === 'PUT') return json(store.updatePlugin(match[1], match[2], body, session.username))
@@ -71,7 +89,7 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
         if ((match = route.match(/^\/api\/orders\/([a-f\d-]+)\/maintenance$/)) && method === 'POST') return json(store.grantMaintenance(match[1], body, session.username))
         if ((match = route.match(/^\/api\/orders\/([a-f\d-]+)\/issue$/)) && method === 'POST') return json(store.issue(match[1], session.username))
         if ((match = route.match(/^\/api\/licenses\/([a-f\d-]+)$/)) && method === 'GET') return json(store.license(match[1]))
-        if ((match = route.match(/^\/api\/releases\/([^/]+)\/publish$/)) && method === 'POST') return json(store.publishRelease(decodeURIComponent(match[1]), session.username))
+        if ((match = route.match(/^\/api\/releases\/([^/]+)\/publish$/)) && method === 'POST') return json(store.releaseService.publish(body.productId||DEFAULT_PRODUCT,decodeURIComponent(match[1]), session.username))
         fail('接口不存在', 404)
       }
       if (method !== 'GET' || !staticDirectory) fail('资源不存在', 404)

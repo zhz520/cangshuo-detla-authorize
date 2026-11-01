@@ -12,6 +12,7 @@ COPY --from=build --chown=node:node /app/dist ./dist
 COPY --chown=node:node server ./server
 COPY --chown=node:node scripts ./scripts
 COPY --chown=node:node package.json ./package.json
+COPY --from=build --chown=node:node /app/node_modules/nodemailer ./node_modules/nodemailer
 RUN mkdir -p /app/data && chown node:node /app/data
 USER node
 ENV DATA_DIR=/app/data AUTHORITY_ENV_FILE=/app/data/operator.env

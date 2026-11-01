@@ -8,7 +8,7 @@ import { createAuthorityServer } from '../server/http.mjs'
 
 const ownerPassword = 'Test-only-operator-password-2026'
 function fixture(){const keys=generateKeyPairSync('ed25519',{privateKeyEncoding:{type:'pkcs8',format:'pem'},publicKeyEncoding:{type:'spki',format:'pem'}});const store=new AuthorityStore({database:':memory:',privateKey:keys.privateKey,ownerUsername:'owner',ownerPassword});return {store,keys}}
-function instance(store,version='1.1.0-preview.2'){
+function instance(store,version='1.1.0'){
   store.createCustomer({id:'interop742',name:'集成测试客户'},'owner')
   const id=randomUUID();store.createInstance({id,customerId:'interop742',name:'隔离测试实例',clientVersion:version,domains:['jaxapi.kkimg.top','jax.kkimg.top'],maintenanceUntil:new Date(Date.now()+400*86400000).toISOString()},'owner');return id
 }
@@ -49,7 +49,7 @@ test('older client versions, invalid prices and unsafe release links are rejecte
  assert.throws(()=>store.updateModule('advanced_income_reports',{priceCents:-1,termDays:30,status:'ACTIVE'},'owner'),/价格/)
  assert.throws(()=>store.updateModule('advanced_income_reports',{priceCents:0.1,termDays:30,status:'ACTIVE'},'owner'),/整数/)
  assert.throws(()=>store.createRelease({version:'1.0.0',channel:'stable',notes:'test',sourceUrl:'javascript:alert(1)'},'owner'),/客户端仓库/)
- const body={version:'1.1.0-preview.2',channel:'preview',notes:'仅发布目录，不执行安装',sourceUrl:'https://github.com/zhz520/cangshuo-detla/releases/tag/v1.1.0-preview.2'}
+ const body={version:'1.1.0',channel:'stable',notes:'仅发布目录，不执行安装',sourceUrl:'https://github.com/zhz520/cangshuo-detla/releases/tag/v1.1.0'}
  store.createRelease(body,'owner');assert.equal(store.publishedReleases().length,0);store.publishRelease(body.version,'owner');assert.equal(store.publishedReleases().length,1)
  assert(compareVersions('1.10.0','1.9.0')>0);assert(compareVersions('1.1.0-preview.10','1.1.0-preview.2')>0);assert(compareVersions('1.1.0','1.1.0-preview.2')>0)
  }finally{store.close()}
@@ -76,7 +76,7 @@ test('a valid signed client report updates its version and last-seen time',()=>{
 test('plugin credentials are validated and stored per customer instance',()=>{
  const {store}=fixture();try{const id=instance(store);assert(store.lists().plugins.some(plugin=>plugin.id==='wechat_pay'))
  assert.throws(()=>store.updatePlugin(id,'wechat_pay',{enabled:true,config:{merchantId:'123'}},'owner'),/填写/)
- const config={appId:'wx-test',merchantId:'1900000109',apiV3Key:'test-key',merchantSerialNo:'serial',privateKeyPath:'/app/cert/apiclient_key.pem',publicKeyId:'PUB_KEY_ID_TEST',publicKeyPath:'/app/cert/wxpay_public.pem',notifyUrl:'https://jaxapi.kkimg.top/api/pay/wx/notify',h5AppName:'Delta'}
+ const config={paymentMethods:['H5','JSAPI'],appId:'wx-test',merchantId:'1900000109',apiV3Key:'test-key',merchantSerialNo:'serial',privateKeyPath:'/app/cert/apiclient_key.pem',publicKeyId:'PUB_KEY_ID_TEST',publicKeyPath:'/app/cert/wxpay_public.pem',notifyUrl:'https://jaxapi.kkimg.top/api/pay/wx/notify',h5AppName:'Delta'}
  store.updatePlugin(id,'wechat_pay',{enabled:true,config},'owner');const row=store.lists().instancePlugins.find(item=>item.instance_id===id&&item.plugin_id==='wechat_pay');assert.equal(row.enabled,true);assert.equal(row.config.merchantId,'1900000109');assert(!JSON.stringify(store.lists().audit).includes('test-key'))
  }finally{store.close()}
 })
