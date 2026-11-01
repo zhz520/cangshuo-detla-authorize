@@ -18,7 +18,7 @@ test('orders require a configured price, a compatible instance and payment befor
  const {store}=fixture();try{const id=instance(store)
  assert.throws(()=>store.createOrder({instanceId:id,moduleId:'advanced_income_reports'},'owner'),/定价/)
  moduleReady(store);const order=store.createOrder({instanceId:id,moduleId:'advanced_income_reports'},'owner')
- assert.throws(()=>store.issue(order.id,'owner'),/已确认收款/)
+ assert.throws(()=>store.issue(order.id,'owner'),/已收款或维护期接入/)
  assert.throws(()=>store.createOrder({instanceId:id,moduleId:'advanced_income_reports'},'owner'),/待收款/)
  store.markPaid(order.id,{reference:'仅测试，不涉及真实收款'},'owner');const issued=store.issue(order.id,'owner')
  const claims=JSON.parse(Buffer.from(issued.envelope.payload,'base64url'))
@@ -61,6 +61,10 @@ test('licenses are bound to allowed domains and the maintenance expiry',()=>{
  store.updateInstance(id,{name:'新版客户端',clientVersion:'1.1.0-preview.3',domains:['*.kkimg.top'],maintenanceUntil:new Date(Date.now()+500*86400000).toISOString()},'owner')
  const order=store.createOrder({instanceId:id,moduleId:'advanced_income_reports'},'owner');store.markPaid(order.id,{reference:'test'},'owner');const claims=JSON.parse(Buffer.from(store.issue(order.id,'owner').envelope.payload,'base64url'))
  assert.deepEqual(claims.allowedDomains,['*.kkimg.top']);assert.equal(claims.expiresAt,store.lists().instances[0].maintenance_until)
+ }finally{store.close()}
+})
+test('maintenance activation is recorded without pretending it was an online payment',()=>{
+ const {store}=fixture();try{const id=instance(store);moduleReady(store);const order=store.createOrder({instanceId:id,moduleId:'advanced_income_reports'},'owner');store.grantMaintenance(order.id,{note:'年度维护已经续签，未走在线收款'},'owner');const row=store.lists().orders.find(item=>item.id===order.id);assert.equal(row.status,'MAINTENANCE');assert.equal(row.paid_at,null);assert.match(row.payment_reference,/未走在线收款/);assert(store.issue(order.id,'owner').envelope.signature)
  }finally{store.close()}
 })
 test('sessions are hashed, unauthorized access and CSRF and cross-origin writes are rejected',async()=>{

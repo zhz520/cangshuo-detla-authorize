@@ -167,12 +167,23 @@ export class AuthorityStore {
       this.audit(actor, 'CONFIRM_MANUAL_PAYMENT', id, { amountCents: order.amount_cents, reference }); return { id }
     })
   }
+  grantMaintenance(id, body, actor) {
+    const note = text(body.note, '维护期接入说明', 200)
+    return this.transaction(() => {
+      const order = this.db.prepare('SELECT * FROM orders WHERE id=?').get(id)
+      if (!order) fail('订单不存在', 404)
+      if (order.status === 'MAINTENANCE') return { id }
+      if (order.status !== 'UNPAID') fail('只有待确认订单可以登记维护期接入', 409)
+      this.db.prepare("UPDATE orders SET status='MAINTENANCE',payment_reference=? WHERE id=?").run(note, id)
+      this.audit(actor, 'GRANT_MAINTENANCE_ACCESS', id, { amountCents: order.amount_cents, note }); return { id }
+    })
+  }
   issue(id, actor) {
     return this.transaction(() => {
       const duplicate = this.db.prepare('SELECT id,envelope FROM licenses WHERE order_id=?').get(id)
       if (duplicate) return { id: duplicate.id, envelope: JSON.parse(duplicate.envelope) }
       const order = this.db.prepare('SELECT o.*,i.customer_id,i.domains,i.maintenance_until,c.status AS customer_status FROM orders o JOIN instances i ON i.id=o.instance_id JOIN customers c ON c.id=i.customer_id WHERE o.id=?').get(id)
-      if (!order || order.status !== 'PAID' || order.customer_status !== 'ACTIVE') fail('只能为已确认收款的有效客户订单签发授权', 409)
+      if (!order || !['PAID','MAINTENANCE'].includes(order.status) || order.customer_status !== 'ACTIVE') fail('只能为已收款或维护期接入的有效客户订单签发授权', 409)
       const maintenanceUntil = timestamp(order.maintenance_until, '维护期至')
       if (Date.parse(maintenanceUntil) <= Date.now()) fail('维护期已经结束，请先延长维护期并重新签发', 409)
       const last = this.db.prepare('SELECT issued_at FROM licenses WHERE instance_id=? ORDER BY issued_at DESC LIMIT 1').get(order.instance_id)
