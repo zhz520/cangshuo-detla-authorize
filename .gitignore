@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.local/
+.env*
+!.env.example
+*.sqlite*
+*.pem
+*.license.json
+*.log
+coverage/
+runtime/

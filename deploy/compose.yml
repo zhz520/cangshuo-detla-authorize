@@ -1,0 +1,21 @@
+name: cangshuo-detla-authority
+services:
+  authority:
+    build: ..
+    image: cangshuo-detla-authority:0.1.0
+    restart: unless-stopped
+    environment:
+      DATA_DIR: /app/data
+      AUTHORITY_ENV_FILE: /app/data/operator.env
+      HOST: 0.0.0.0
+      PORT: 17441
+      COOKIE_SECURE: "true"
+    ports:
+      - 127.0.0.1:17441:17441
+    volumes:
+      - ../runtime:/app/data
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:17441/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
