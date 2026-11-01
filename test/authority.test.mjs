@@ -67,6 +67,17 @@ test('maintenance activation is recorded without pretending it was an online pay
  const {store}=fixture();try{const id=instance(store);moduleReady(store);const order=store.createOrder({instanceId:id,moduleId:'advanced_income_reports'},'owner');store.grantMaintenance(order.id,{note:'年度维护已经续签，未走在线收款'},'owner');const row=store.lists().orders.find(item=>item.id===order.id);assert.equal(row.status,'MAINTENANCE');assert.equal(row.paid_at,null);assert.match(row.payment_reference,/未走在线收款/);assert(store.issue(order.id,'owner').envelope.signature)
  }finally{store.close()}
 })
+test('customers support query, update and guarded delete',()=>{
+ const {store}=fixture();try{
+  store.createCustomer({id:'crud',name:'原名称',note:'初始备注'},'owner')
+  assert.equal(store.lists().customers.find(row=>row.id==='crud').name,'原名称')
+  store.updateCustomer('crud',{name:'新名称',status:'DISABLED',note:'暂停合作'},'owner')
+  let row=store.lists().customers.find(row=>row.id==='crud');assert.equal(row.name,'新名称');assert.equal(row.status,'DISABLED');assert.equal(row.note,'暂停合作')
+  const project=store.management.saveProject(null,{customerId:'crud',productId:'detla',name:'关联项目',maintenanceUntil:'2028-01-01T00:00:00Z'},'owner').id
+  assert.throws(()=>store.deleteCustomer('crud','owner'),/关联项目或实例/)
+  store.db.prepare('DELETE FROM projects WHERE id=?').run(project);store.deleteCustomer('crud','owner');assert.equal(store.lists().customers.some(row=>row.id==='crud'),false)
+ }finally{store.close()}
+})
 test('a valid signed client report updates its version and last-seen time',()=>{
  const {store}=fixture();try{const id=instance(store);moduleReady(store);const order=store.createOrder({instanceId:id,moduleId:'advanced_income_reports'},'owner');store.grantMaintenance(order.id,{note:'test'},'owner');const license=store.issue(order.id,'owner').envelope
  const report=store.reportVersion(license,'1.1.0-preview.2');assert.equal(report.instanceId,id);let row=store.lists().instances.find(item=>item.id===id);assert.equal(row.client_version,'1.1.0-preview.2');assert(row.last_seen_at)
@@ -86,6 +97,8 @@ test('sessions are hashed, unauthorized access and CSRF and cross-origin writes 
   result=await fetch(base+'/api/customers',{method:'POST',headers:{'Content-Type':'application/json',Cookie:cookie},body:JSON.stringify({id:'742',name:'test'})});assert.equal(result.status,403)
   result=await fetch(base+'/api/customers',{method:'POST',headers:{'Content-Type':'application/json',Cookie:cookie,'X-CSRF-Token':session.csrf,Origin:'https://untrusted.example'},body:'{}'});assert.equal(result.status,403)
   result=await fetch(base+'/api/customers',{method:'POST',headers:{'Content-Type':'application/json',Cookie:cookie,'X-CSRF-Token':session.csrf},body:JSON.stringify({id:'742',name:'test'})});assert.equal(result.status,201)
+  result=await fetch(base+'/api/customers/742',{method:'PUT',headers:{'Content-Type':'application/json',Cookie:cookie,'X-CSRF-Token':session.csrf},body:JSON.stringify({name:'updated',note:'note',status:'DISABLED'})});assert.equal(result.status,200)
+  result=await fetch(base+'/api/customers/742',{method:'DELETE',headers:{Cookie:cookie,'X-CSRF-Token':session.csrf}});assert.equal(result.status,200)
   assert.equal((await fetch(base+'/api/public-key')).status,401)
   result=await fetch(base+'/api/logout',{method:'POST',headers:{'Content-Type':'application/json',Cookie:cookie,'X-CSRF-Token':session.csrf},body:'{}'});assert.equal(result.status,200)
   assert.equal((await fetch(base+'/api/data',{headers:{Cookie:cookie}})).status,401)

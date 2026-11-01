@@ -46,6 +46,7 @@ export class Releases {
   async sync(productId=DEFAULT_PRODUCT,force=false) {
     if (this.running.has(productId)) return this.running.get(productId)
     const product=this.product(productId)
+    if (!product.repository) fail('该软件未关联 GitHub 仓库，无需检查正式版',409)
     if (!force && product.checked_at && Date.now()-Date.parse(product.checked_at)<15*60000) return {cached:true,...this.store.management.clientUpdates(productId,'0.0.0')}
     const task=this.fetchReleases(product).finally(()=>this.running.delete(productId));this.running.set(productId,task);return task
   }

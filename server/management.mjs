@@ -21,7 +21,9 @@ export function emailAddress(value) {
   return value
 }
 export function repositoryName(value) {
-  const repository = String(value || '').replace(/^https:\/\/github.com\//, '').replace(/\.git$/, '').replace(/\/$/, '')
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  const repository = raw.replace(/^https:\/\/github.com\//, '').replace(/\.git$/, '').replace(/\/$/, '')
   if (!/^[\w.-]+\/[\w.-]+$/.test(repository)) fail('填写 GitHub owner/repository 仓库名称')
   return repository
 }
@@ -85,9 +87,10 @@ export class Management {
   saveProduct(id, body, actor) {
     id = identifier(id || body.id,'软件编号'); const name = text(body.name,'软件名称',80), repository = repositoryName(body.repository)
     if (!['WEB','H5','MINIAPP','OTHER'].includes(body.kind)) fail('项目类型不正确')
+    if (body.githubToken && !repository) fail('只读令牌需要先填写 GitHub 仓库；未使用 GitHub 可同时留空')
     return this.store.transaction(() => {
       const previous = this.db.prepare('SELECT repository FROM products WHERE id=?').get(id)
-      if (previous && previous.repository!==repository && this.db.prepare('SELECT 1 FROM release_catalog WHERE product_id=? LIMIT 1').get(id)) fail('已有版本的软件不能直接更换仓库，请登记新软件')
+      if (previous?.repository && repository && previous.repository!==repository && this.db.prepare('SELECT 1 FROM release_catalog WHERE product_id=? LIMIT 1').get(id)) fail('已有版本的软件不能直接更换仓库，请登记新软件')
       this.db.prepare('INSERT INTO products(id,name,kind,repository,created_at) VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,kind=excluded.kind,repository=excluded.repository').run(id,name,body.kind,repository,stamp())
       if(body.githubToken) {
         if(typeof body.githubToken!=='string'||!/^github_pat_[A-Za-z0-9_]{20,500}$/.test(body.githubToken.trim()))fail('请填写独立的 GitHub Fine-grained 只读令牌')

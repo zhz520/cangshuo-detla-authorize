@@ -86,6 +86,8 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
         if ((match = route.match(/^\/api\/payments\/([\w-]+)$/)) && method === 'PUT') return json(store.management.savePaymentProvider(match[1],body,session.username))
         if (route === '/api/mail/test' && method === 'POST') return json(mailer.test(body,session.username))
         if ((match=route.match(/^\/api\/products\/([\w-]+)$/)) && method==='PUT') return json(store.management.saveProduct(match[1],body,session.username))
+        if ((match=route.match(/^\/api\/customers\/([\w-]+)$/)) && method==='PUT') return json(store.updateCustomer(match[1],body,session.username))
+        if ((match=route.match(/^\/api\/customers\/([\w-]+)$/)) && method==='DELETE') return json(store.deleteCustomer(match[1],session.username))
         if ((match=route.match(/^\/api\/projects\/([a-f\d-]+)$/)) && method==='PUT') return json(store.management.saveProject(match[1],body,session.username))
         if ((match=route.match(/^\/api\/instances\/([a-f\d-]+)\/identity$/)) && method==='GET') return json(store.management.identity(match[1],session.username))
         if ((match=route.match(/^\/api\/products\/([\w-]+)\/sync$/)) && method==='POST') return json(await store.releaseService.sync(match[1],true))

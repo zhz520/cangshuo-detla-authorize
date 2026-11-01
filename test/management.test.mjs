@@ -120,3 +120,11 @@ test('project deposit, balance and collection notes are administrator-only comme
   store.management.saveProject(project,{name:'项目A',maintenanceUntil:'2029-01-01T00:00:00Z',depositAmountCents:null,balanceAmountCents:null,contractNote:''},'owner');row=store.lists().projects[0];assert.equal(row.deposit_amount_cents,null);assert.equal(row.contract_total_cents,null)
  }finally{f.close()}
 })
+test('software registration does not require GitHub while version checks remain optional',async()=>{
+ const f=setup(),{store}=f;try{
+  store.management.saveProduct(null,{id:'local-tool',name:'本地业务系统',kind:'WEB',repository:''},'owner')
+  const product=store.lists().products.find(row=>row.id==='local-tool');assert.equal(product.repository,'');assert.equal(product.check_error,null)
+  await assert.rejects(store.releaseService.sync('local-tool',true),/未关联 GitHub/)
+  assert.throws(()=>store.management.saveProduct(null,{id:'bad-token',name:'错误配置',kind:'WEB',repository:'',githubToken:'github_pat_'+'a'.repeat(30)},'owner'),/先填写 GitHub 仓库/)
+ }finally{f.close()}
+})

@@ -159,6 +159,24 @@ export class AuthorityStore {
     const id = identifier(body.id, '客户编号'), name = text(body.name, '客户名称', 80), note = String(body.note || '').slice(0, 500)
     return this.transaction(() => { this.db.prepare('INSERT INTO customers VALUES (?,?,?,?,?)').run(id, name, 'ACTIVE', note, now()); this.audit(actor, 'CREATE_CUSTOMER', id); return { id } })
   }
+  updateCustomer(id, body, actor) {
+    id = identifier(id, '客户编号')
+    if (!this.db.prepare('SELECT id FROM customers WHERE id=?').get(id)) fail('客户不存在', 404)
+    const name = text(body.name, '客户名称', 80), note = String(body.note || '').slice(0, 500), status = body.status || 'ACTIVE'
+    if (!['ACTIVE', 'DISABLED'].includes(status)) fail('客户状态不正确')
+    return this.transaction(() => {
+      this.db.prepare('UPDATE customers SET name=?,status=?,note=? WHERE id=?').run(name,status,note,id)
+      this.audit(actor,'UPDATE_CUSTOMER',id,{status});return {id,status}
+    })
+  }
+  deleteCustomer(id, actor) {
+    id = identifier(id, '客户编号')
+    if (!this.db.prepare('SELECT id FROM customers WHERE id=?').get(id)) fail('客户不存在', 404)
+    const projects=this.db.prepare('SELECT COUNT(*) AS count FROM projects WHERE customer_id=?').get(id).count
+    const instances=this.db.prepare('SELECT COUNT(*) AS count FROM instances WHERE customer_id=?').get(id).count
+    if (projects || instances) fail('该客户仍有关联项目或实例，不能删除；请先停用客户或清理关联项目', 409)
+    return this.transaction(() => { this.db.prepare('DELETE FROM customers WHERE id=?').run(id); this.audit(actor,'DELETE_CUSTOMER',id); return {id} })
+  }
   createInstance(body, actor) {
     const id = text(body.id, '实例编号', 36)
     if (!/^[a-f\d]{8}-(?:[a-f\d]{4}-){3}[a-f\d]{12}$/.test(id)) fail('请复制客户后台显示的小写 UUID 实例编号')
