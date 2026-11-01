@@ -17,6 +17,7 @@ export class Management {
     this.store = store; this.db = store.db
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS products (id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL, repository TEXT NOT NULL, checked_at TEXT, check_error TEXT, created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS github_tokens (product_id TEXT PRIMARY KEY REFERENCES products(id), token TEXT NOT NULL, updated_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, customer_id TEXT NOT NULL REFERENCES customers(id), product_id TEXT NOT NULL REFERENCES products(id), name TEXT NOT NULL, maintenance_until TEXT NOT NULL, pause_policy TEXT NOT NULL DEFAULT 'PENDING', status TEXT NOT NULL DEFAULT 'ACTIVE', notification_email TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS release_catalog (product_id TEXT NOT NULL REFERENCES products(id), version TEXT NOT NULL, channel TEXT NOT NULL, notes TEXT NOT NULL, source_url TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, published_at TEXT, items TEXT NOT NULL DEFAULT '[]', assets TEXT NOT NULL DEFAULT '[]', origin TEXT NOT NULL DEFAULT 'MANUAL', PRIMARY KEY(product_id,version));
       CREATE TABLE IF NOT EXISTS maintenance_licenses (instance_id TEXT PRIMARY KEY REFERENCES instances(id), envelope TEXT NOT NULL, updated_at TEXT NOT NULL);
@@ -49,7 +50,7 @@ export class Management {
     return project.status !== 'ACTIVE' ? 'PAUSED' : Date.parse(project.maintenance_until) <= at ? 'EXPIRED' : 'ACTIVE'
   }
   lists() {
-    const products = this.db.prepare('SELECT * FROM products ORDER BY created_at').all()
+    const products = this.db.prepare('SELECT p.*,EXISTS(SELECT 1 FROM github_tokens t WHERE t.product_id=p.id) AS token_configured FROM products p ORDER BY created_at').all()
     const projects = this.db.prepare('SELECT p.*,c.name AS customer_name,s.name AS product_name,s.kind,s.repository FROM projects p JOIN customers c ON c.id=p.customer_id JOIN products s ON s.id=p.product_id ORDER BY p.created_at DESC').all().map(row => ({...row,effective_status:this.projectStatus(row)}))
     const releases = this.db.prepare('SELECT r.*,p.name AS product_name FROM release_catalog r JOIN products p ON p.id=r.product_id ORDER BY r.published_at DESC,r.created_at DESC').all().map(row => ({...row,items:JSON.parse(row.items),assets:JSON.parse(row.assets)}))
     const instances = this.db.prepare('SELECT i.*,c.name AS customer_name,p.name AS project_name,p.product_id,p.pause_policy,p.status AS project_status,p.maintenance_until AS project_maintenance_until FROM instances i JOIN customers c ON c.id=i.customer_id JOIN projects p ON p.id=i.project_id ORDER BY i.created_at DESC').all().map(row => {
@@ -65,6 +66,11 @@ export class Management {
       const previous = this.db.prepare('SELECT repository FROM products WHERE id=?').get(id)
       if (previous && previous.repository!==repository && this.db.prepare('SELECT 1 FROM release_catalog WHERE product_id=? LIMIT 1').get(id)) fail('已有版本的软件不能直接更换仓库，请登记新软件')
       this.db.prepare('INSERT INTO products(id,name,kind,repository,created_at) VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,kind=excluded.kind,repository=excluded.repository').run(id,name,body.kind,repository,stamp())
+      if(body.githubToken) {
+        if(typeof body.githubToken!=='string'||!/^github_pat_[A-Za-z0-9_]{20,500}$/.test(body.githubToken.trim()))fail('请填写独立的 GitHub Fine-grained 只读令牌')
+        this.db.prepare('INSERT INTO github_tokens VALUES (?,?,?) ON CONFLICT(product_id) DO UPDATE SET token=excluded.token,updated_at=excluded.updated_at').run(id,body.githubToken.trim(),stamp())
+        this.db.prepare('UPDATE products SET checked_at=NULL,check_error=NULL WHERE id=?').run(id)
+      }
       this.store.audit(actor,'SAVE_PRODUCT',id); return {id}
     })
   }

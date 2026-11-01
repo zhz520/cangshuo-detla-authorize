@@ -70,7 +70,7 @@ test('maintenance activation is recorded without pretending it was an online pay
 test('a valid signed client report updates its version and last-seen time',()=>{
  const {store}=fixture();try{const id=instance(store);moduleReady(store);const order=store.createOrder({instanceId:id,moduleId:'advanced_income_reports'},'owner');store.grantMaintenance(order.id,{note:'test'},'owner');const license=store.issue(order.id,'owner').envelope
  const report=store.reportVersion(license,'1.1.0-preview.2');assert.equal(report.instanceId,id);let row=store.lists().instances.find(item=>item.id===id);assert.equal(row.client_version,'1.1.0-preview.2');assert(row.last_seen_at)
- assert.throws(()=>store.reportVersion({...license,signature:license.signature.slice(0,-1)+'A'},'9.9.9'),/签名无效|授权内容无效/)
+ assert.throws(()=>store.reportVersion({...license,signature:(license.signature[0]==='A'?'B':'A')+license.signature.slice(1)},'9.9.9'),/签名无效|授权内容无效/)
  }finally{store.close()}
 })
 test('plugin credentials are validated and stored per customer instance',()=>{

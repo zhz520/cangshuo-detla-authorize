@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite'
 import { createHash, createPrivateKey, createPublicKey, randomBytes, randomUUID, scryptSync, sign, timingSafeEqual, verify } from 'node:crypto'
-import { mkdirSync, readFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, chmodSync, existsSync } from 'node:fs'
 import path from 'node:path'
 import { Management, DEFAULT_PRODUCT } from './management.mjs'
 import { Releases } from './releases.mjs'
@@ -116,6 +116,7 @@ export class AuthorityStore {
     for (const [id,name,category,description,schema] of plugins) addPlugin.run(id,name,category,description,JSON.stringify(schema),'ACTIVE',now())
     this.management = new Management(this)
     this.releaseService = new Releases(this)
+    if(database!==':memory:')for(const file of [database,database+'-wal',database+'-shm'])if(existsSync(file))chmodSync(file,0o600)
   }
   close() { this.db.close() }
   audit(actor, action, target, detail = {}) { this.db.prepare('INSERT INTO audit(actor,action,target,detail,created_at) VALUES (?,?,?,?,?)').run(actor, action, target, JSON.stringify(detail), now()) }

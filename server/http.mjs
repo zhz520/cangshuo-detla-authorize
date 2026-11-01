@@ -5,6 +5,8 @@ import path from 'node:path'
 import { HttpError, fail } from './store.mjs'
 import { DEFAULT_PRODUCT } from './management.mjs'
 import { Mailer } from './mail.mjs'
+import { Readable,Transform } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 
 const equal = (a, b) => { const x = Buffer.from(String(a || '')), y = Buffer.from(String(b || '')); return x.length === y.length && timingSafeEqual(x, y) }
 export function createAuthorityServer(store, { secureCookie = false, staticDirectory, allowedOrigins = [] } = {}) {
@@ -44,6 +46,12 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
         return json({...claims,updates:store.management.clientUpdates(JSON.parse(Buffer.from(claims.project.payload,'base64url')).productId,body.version)})
       }
       if(route==='/api/client/update-plan' && method==='POST')return json(store.releaseService.plan(body))
+      if(route==='/api/client/artifact' && method==='POST') {
+        const {result,size}=await store.releaseService.artifact(body);let bytes=0
+        response.writeHead(200,{'Content-Type':'application/zip','Content-Length':String(size)})
+        await pipeline(Readable.fromWeb(result.body),new Transform({transform(chunk,encoding,callback){bytes+=chunk.length;callback(bytes>size?new Error('Artifact too large'):null,chunk)}}),response)
+        return
+      }
       const token = (request.headers.cookie || '').split(';').map(value => value.trim()).find(value => value.startsWith('authority_session='))?.slice(18)
       if (route === '/api/login' && method === 'POST') {
         const bucket = String(request.socket.remoteAddress), time = Date.now()

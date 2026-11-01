@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {generateKeyPairSync,randomUUID,verify} from 'node:crypto'
+import {generateKeyPairSync,randomUUID,verify,createHash} from 'node:crypto'
 import {AuthorityStore} from '../server/store.mjs'
 import {Releases,releaseItems} from '../server/releases.mjs'
 import {Mailer} from '../server/mail.mjs'
@@ -74,5 +74,23 @@ test('update plans lock required dependencies, validate packages and reject unpa
   store.releaseService.configureItems('detla','1.2.0',{items:[{id:'paid',name:'付费模块',component:'admin',featureId:'advanced_income_reports'}]},'owner')
   assert.throws(()=>store.releaseService.plan({license:identity,version:'1.1.0',selection:['1.2.0:paid']}),/购买/)
   assert.throws(()=>releaseItems([{id:'a',name:'A',component:'backend',requires:['b']},{id:'b',name:'B',component:'backend',requires:['a']}]),/循环/)
+ }finally{f.close()}
+})
+test('private repository token stays in the authority and artifact access requires a valid active plan',async()=>{
+ const f=setup(),{store,instance,project}=f;try{
+  const token='github_pat_'+ 'test'.repeat(15),bytes=Buffer.from('test-zip-content'),digest='sha256:'+createHash('sha256').update(bytes).digest('hex')
+  store.management.saveProduct('detla',{name:'电竞业务系统',kind:'WEB',repository:'zhz520/cangshuo-detla',githubToken:token},'owner')
+  assert(!JSON.stringify(store.lists()).includes(token));assert.equal(store.lists().products[0].token_configured,1)
+  let downloads=0
+  const service=new Releases(store,{fetcher:async(url,options)=>{
+    assert.equal(options.headers.Authorization,'Bearer '+token)
+    if(url.includes('/releases/assets/')){downloads++;return new Response(bytes,{headers:{'Content-Type':'application/octet-stream'}})}
+    return new Response(JSON.stringify([{tag_name:'v1.2.0',html_url:'https://github.com/zhz520/cangshuo-detla/releases/tag/v1.2.0',body:'test',published_at:'2026-11-01T00:00:00Z',assets:[{id:17,name:'cangshuo-admin.zip',browser_download_url:'https://github.com/zhz520/cangshuo-detla/releases/download/v1.2.0/cangshuo-admin.zip',size:bytes.length,digest}]}]))
+  }})
+  await service.sync('detla',true);service.configureItems('detla','1.2.0',{items:[{id:'admin',name:'后台',component:'admin'}]},'owner')
+  const plan=service.plan({license:store.management.identity(instance,'owner'),version:'1.1.0',selection:['1.2.0:admin']})
+  assert(!JSON.stringify(plan).includes(token));const response=await service.artifact({plan,component:'admin'});assert.deepEqual(Buffer.from(await response.result.arrayBuffer()),bytes);assert.equal(downloads,1)
+  store.management.saveProject(project,{name:'项目A',maintenanceUntil:'2020-01-01T00:00:00Z',pausePolicy:'STOP_ALL'},'owner')
+  await assert.rejects(service.artifact({plan,component:'admin'}),/过期或项目暂停/)
  }finally{f.close()}
 })

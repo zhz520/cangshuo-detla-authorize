@@ -1,6 +1,6 @@
 import { compareVersions, fail, text } from './store.mjs'
 import { DEFAULT_PRODUCT, stamp } from './management.mjs'
-import { randomUUID } from 'node:crypto'
+import { randomUUID,verify } from 'node:crypto'
 
 export function releaseItems(value) {
   if (!Array.isArray(value) || value.length>100) fail('版本更新项格式不正确')
@@ -54,16 +54,17 @@ export class Releases {
       const collected=[]
       for(let page=1;page<=20;page++) {
         const headers={Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'Cangshuo-Authority'}
-        if(this.token)headers.Authorization='Bearer '+this.token
+        const token=this.db.prepare('SELECT token FROM github_tokens WHERE product_id=?').get(product.id)?.token || this.token
+        if(token)headers.Authorization='Bearer '+token
         const response=await this.fetcher(`https://api.github.com/repos/${product.repository}/releases?per_page=100&page=${page}`,{headers,signal:AbortSignal.timeout(15000),redirect:'error'})
-        if(!response.ok)fail(`GitHub 版本检查失败（HTTP ${response.status}）`,502)
+        if(!response.ok)fail(response.status===404?'GitHub 仓库不可读取：私有仓库请在“软件与仓库”配置只读令牌。':`GitHub 版本检查失败（HTTP ${response.status}）`,502)
         const rows=await response.json();if(!Array.isArray(rows))fail('GitHub 返回的版本目录无效',502)
         for(const row of rows) {
           const version=String(row.tag_name||'').replace(/^v/,'')
           if(row.draft||row.prerelease||!/^\d+\.\d+\.\d+$/.test(version))continue
           compareVersions(version,version)
           if (row.html_url!==`https://github.com/${product.repository}/releases/tag/${row.tag_name}`) continue
-          const assets=(row.assets||[]).filter(asset=>asset.browser_download_url?.startsWith(`https://github.com/${product.repository}/releases/download/`)).map(asset=>({name:asset.name,url:asset.browser_download_url,size:asset.size,digest:asset.digest||null}))
+          const assets=(row.assets||[]).filter(asset=>asset.browser_download_url?.startsWith(`https://github.com/${product.repository}/releases/download/`)).map(asset=>({id:asset.id,name:asset.name,url:asset.browser_download_url,size:asset.size,digest:asset.digest||null}))
           collected.push({version,notes:String(row.body||row.name||version).slice(0,20000),url:row.html_url,publishedAt:row.published_at,assets})
         }
         if(rows.length<100)break
@@ -114,13 +115,31 @@ export class Releases {
       const asset=release.assets.find(asset=>asset.name===`cangshuo-${component}.zip`)
       if(!asset||!/^sha256:[a-f0-9]{64}$/.test(asset.digest||''))fail(`${version} 的 ${component} 尚未提供带校验值的正式更新包`,409)
       if(asset.size<=0||asset.size>500_000_000)fail('更新包大小不正确')
-      packages.push({component,version,url:asset.url,sha256:asset.digest.slice(7),size:asset.size})
+      packages.push({component,version,url:asset.url,downloadPath:'/api/client/artifact',sha256:asset.digest.slice(7),size:asset.size})
     }
     const entitlements=this.db.prepare('SELECT module_id FROM entitlements WHERE instance_id=? AND valid_until>?').all(claims.instanceId,stamp()).map(row=>row.module_id)
     for(const item of final)if(item.featureId&&!entitlements.includes(item.featureId))fail(`更新内容「${item.name}」需要先购买相应功能`,403)
     if(!packages.length)fail('所选内容已安装，无需重复更新',409)
-    const plan={id:randomUUID(),customerId:claims.customerId,projectId:claims.projectId,instanceId:claims.instanceId,productId:claims.productId,issuedAt:stamp(),expiresAt:new Date(Date.now()+15*60000).toISOString(),fromVersion:body.version,targetVersion:target,schemaVersion:1,items:final,packages}
+    const plan={id:randomUUID(),customerId:claims.customerId,projectId:claims.projectId,instanceId:claims.instanceId,productId:claims.productId,issuedAt:stamp(),expiresAt:new Date(Math.min(Date.now()+15*60000,Date.parse(claims.maintenanceUntil))).toISOString(),fromVersion:body.version,targetVersion:target,schemaVersion:1,items:final,packages}
+    if(Buffer.byteLength(JSON.stringify(plan))>30000)fail('一次选择的更新内容过多，请分批更新',413)
     this.store.audit('client','CREATE_UPDATE_PLAN',plan.id,{instanceId:claims.instanceId,targetVersion:target,selection:[...chosen]})
     return this.store.management.signed('cangshuo-update-v1',plan)
+  }
+  async artifact(body) {
+    const envelope=body.plan
+    if(envelope?.format!=='cangshuo-update-v1'||typeof envelope.payload!=='string'||envelope.payload.length>1_500_000||typeof envelope.signature!=='string'||envelope.signature.length>128)fail('更新计划无效',401)
+    if(!verify(null,Buffer.from(envelope.format+'.'+envelope.payload),this.store.publicKey,Buffer.from(envelope.signature,'base64url')))fail('更新计划签名无效',401)
+    let plan;try{plan=JSON.parse(Buffer.from(envelope.payload,'base64url'))}catch{fail('更新计划格式无效',401)}
+    const instance=this.db.prepare('SELECT i.customer_id,i.project_id,p.product_id,p.status,p.maintenance_until FROM instances i JOIN projects p ON p.id=i.project_id WHERE i.id=?').get(plan.instanceId)
+    if(!instance||instance.customer_id!==plan.customerId||instance.project_id!==plan.projectId||instance.product_id!==plan.productId||instance.status!=='ACTIVE'||Date.parse(instance.maintenance_until)<=Date.now()||Date.parse(plan.expiresAt)<=Date.now())fail('更新计划已过期或项目暂停',403)
+    const packageInfo=plan.packages?.find(item=>item.component===body.component);if(!packageInfo)fail('更新组件不存在')
+    const product=this.product(plan.productId),release=this.db.prepare('SELECT assets FROM release_catalog WHERE product_id=? AND version=?').get(product.id,packageInfo.version)
+    const asset=JSON.parse(release?.assets||'[]').find(item=>item.url===packageInfo.url&&item.digest==='sha256:'+packageInfo.sha256)
+    if(!asset?.id||!Number.isSafeInteger(asset.id))fail('正式更新包元数据不完整，请重新同步 GitHub',409)
+    const token=this.db.prepare('SELECT token FROM github_tokens WHERE product_id=?').get(product.id)?.token||this.token
+    const headers={Accept:'application/octet-stream','X-GitHub-Api-Version':'2022-11-28','User-Agent':'Cangshuo-Authority'};if(token)headers.Authorization='Bearer '+token
+    const result=await this.fetcher(`https://api.github.com/repos/${product.repository}/releases/assets/${asset.id}`,{headers,signal:AbortSignal.timeout(300000)})
+    if(!result.ok||!['application/octet-stream','application/zip','application/x-zip-compressed'].some(type=>result.headers.get('content-type')?.startsWith(type)))fail('GitHub 更新包无法下载，请检查只读令牌权限',502)
+    return {result,size:packageInfo.size}
   }
 }

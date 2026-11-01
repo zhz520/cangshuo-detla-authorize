@@ -37,7 +37,7 @@ npm start
 
 初始化生成本地管理员配置和 Ed25519 密钥，不覆盖已有密钥。数据库位于 DATA_DIR/authority.sqlite，密钥、数据库和 operator.env 需在停服务后一起备份，并保留访问权限。不得提交私钥、登录密码、支付密钥或业务数据库。客户端只持有验证公钥。
 
-Docker Compose 默认仅监听本机 17441，不增加客户服务端口。反代应保留 Host、X-Forwarded-Host 和 X-Forwarded-Proto；配置 AUTHORITY_ALLOWED_ORIGINS 与 COOKIE_SECURE=true。可通过 GITHUB_TOKEN 环境变量访问私有仓库，令牌不在界面回传。
+Docker Compose 默认仅监听本机 17441，不增加客户服务端口。反代应保留 Host、X-Forwarded-Host 和 X-Forwarded-Proto；配置 AUTHORITY_ALLOWED_ORIGINS 与 COOKIE_SECURE=true。私有仓库在“软件与仓库”编辑页填写 Fine-grained 令牌，只选择当前仓库并授予 Contents: Read-only。令牌按软件隔离，保存后不回显。也兼容 GITHUB_TOKEN 环境变量。
 
 ## 客户端协议
 
