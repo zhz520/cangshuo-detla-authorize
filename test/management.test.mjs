@@ -19,7 +19,7 @@ test('projects isolate products, repositories and customer instances',()=>{
   const project=store.management.saveProject(null,{customerId:'b',productId:'shop',name:'商城项目',maintenanceUntil:'2029-01-01T00:00:00Z'},'owner').id
   assert.throws(()=>store.createInstance({id:randomUUID(),customerId:'a',projectId:project,name:'越权',domains:['a.example.com']},'owner'),/不匹配/)
   assert.throws(()=>store.releaseService.create({productId:'shop',version:'1.0.0',channel:'stable',notes:'说明',sourceUrl:'https://github.com/zhz520/cangshuo-detla/releases/tag/v1.0.0'},'owner'),/客户端仓库/)
-  assert(!store.lists().plugins.some(row=>['aliyun_sms','wechat_miniapp'].includes(row.id)))
+  assert.equal(store.lists().plugins,undefined)
   const identity=store.management.identity(f.instance,'owner');assert.equal(store.reportVersion(identity,'1.0.0').instanceId,f.instance)
  }finally{f.close()}
 })
@@ -57,7 +57,7 @@ test('SMTP credentials are masked and failed notification delivery is retried wi
  }finally{f.close()}
 })
 test('expiry reminders are deduplicated and do not send to other customers',()=>{
- const f=setup(),{store,project}=f;try{
+ const f=setup(),{store,project,instance}=f;try{
   const at=Date.parse('2028-11-24T12:00:00Z');store.management.scheduleNotifications(at);store.management.scheduleNotifications(at)
   const rows=store.lists().mailQueue;assert.equal(rows.length,1);assert.equal(rows[0].recipient,'customer@example.com');assert.equal(rows[0].project_id,project)
  }finally{f.close()}
@@ -92,5 +92,21 @@ test('private repository token stays in the authority and artifact access requir
   assert(!JSON.stringify(plan).includes(token));const response=await service.artifact({plan,component:'admin'});assert.deepEqual(Buffer.from(await response.result.arrayBuffer()),bytes);assert.equal(downloads,1)
   store.management.saveProject(project,{name:'项目A',maintenanceUntil:'2020-01-01T00:00:00Z',pausePolicy:'STOP_ALL'},'owner')
   await assert.rejects(service.artifact({plan,component:'admin'}),/过期或项目暂停/)
+ }finally{f.close()}
+})
+test('payment credentials live in system settings while projects select enabled providers and methods',()=>{
+ const f=setup(),{store,project,instance}=f;try{
+  let provider=store.management.paymentProviders().find(row=>row.id==='wechat_pay')
+  assert.equal(provider.enabled,false);assert.equal(provider.config.apiV3Key,undefined);assert.equal(provider.secretsSet,false)
+  assert.throws(()=>store.management.saveProject(project,{name:'项目A',maintenanceUntil:'2029-01-01T00:00:00Z',paymentProvider:'wechat_pay',paymentMethods:['H5']},'owner'),/先到支付设置启用/)
+  const config={appId:'wx-test',merchantId:'1900000109',apiV3Key:'system-secret',merchantSerialNo:'serial',privateKeyPath:'/app/cert/private.pem',publicKeyId:'PUB_KEY_TEST',publicKeyPath:'/app/cert/public.pem',notifyUrl:'https://pay.example.com/api/pay/wx/notify',h5AppName:'Example'}
+  store.management.savePaymentProvider('wechat_pay',{enabled:true,methods:['H5','JSAPI'],config},'owner')
+  provider=store.management.paymentProviders()[0];assert.equal(provider.enabled,true);assert.equal(provider.config.apiV3Key,'');assert.equal(provider.secretsSet,true);assert(!JSON.stringify(store.lists()).includes('system-secret'))
+  store.management.saveProject(project,{name:'项目A',maintenanceUntil:'2029-01-01T00:00:00Z',paymentProvider:'wechat_pay',paymentMethods:['H5','JSAPI']},'owner')
+  const row=store.lists().projects[0];assert.equal(row.payment_provider,'wechat_pay');assert.deepEqual(row.payment_methods,['H5','JSAPI']);assert.equal(row.payment_provider_name,'微信支付')
+  const signedProject=JSON.parse(Buffer.from(store.management.clientResponse(instance,'1.2.0').project.payload,'base64url'));assert.deepEqual(signedProject.payment,{provider:'wechat_pay',methods:['H5','JSAPI']})
+  store.management.savePaymentProvider('wechat_pay',{enabled:true,methods:['H5','JSAPI'],config:{...provider.config,apiV3Key:''}},'owner');assert.equal(store.management.paymentProviders()[0].config.apiV3Key,'');assert.equal(store.management.paymentProviders()[0].secretsSet,true)
+  assert.throws(()=>store.management.saveProject(project,{name:'项目A',maintenanceUntil:'2029-01-01T00:00:00Z',paymentProvider:'wechat_pay',paymentMethods:['APP']},'owner'),/默认支付方式/)
+  store.management.saveProject(project,{name:'项目A',maintenanceUntil:'2029-01-01T00:00:00Z',paymentProvider:'',paymentMethods:[]},'owner');assert.equal(store.lists().projects[0].payment_provider,'');assert.deepEqual(store.lists().projects[0].payment_methods,[])
  }finally{f.close()}
 })

@@ -82,8 +82,9 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
         if (route === '/api/modules' && method === 'POST') return json(store.management.saveModule(body,session.username),201)
         if (route === '/api/projects' && method === 'POST') return json(store.management.saveProject(null,body,session.username),201)
         if (route === '/api/mail/settings' && method === 'PUT') return json(store.management.saveMailSettings(body,session.username))
-        if (route === '/api/mail/test' && method === 'POST') return json(mailer.test(body,session.username))
         let match
+        if ((match = route.match(/^\/api\/payments\/([\w-]+)$/)) && method === 'PUT') return json(store.management.savePaymentProvider(match[1],body,session.username))
+        if (route === '/api/mail/test' && method === 'POST') return json(mailer.test(body,session.username))
         if ((match=route.match(/^\/api\/products\/([\w-]+)$/)) && method==='PUT') return json(store.management.saveProduct(match[1],body,session.username))
         if ((match=route.match(/^\/api\/projects\/([a-f\d-]+)$/)) && method==='PUT') return json(store.management.saveProject(match[1],body,session.username))
         if ((match=route.match(/^\/api\/instances\/([a-f\d-]+)\/identity$/)) && method==='GET') return json(store.management.identity(match[1],session.username))
@@ -92,7 +93,6 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
         if ((match=route.match(/^\/api\/products\/([\w-]+)\/releases\/([^/]+)\/items$/)) && method==='PUT') return json(store.releaseService.configureItems(match[1],decodeURIComponent(match[2]),body,session.username))
         if ((match = route.match(/^\/api\/instances\/([a-f\d-]+)$/)) && method === 'PUT') return json(store.updateInstance(match[1], body, session.username))
         if ((match = route.match(/^\/api\/modules\/([\w-]+)$/)) && method === 'PUT') return json(store.updateModule(match[1], body, session.username))
-        if ((match = route.match(/^\/api\/instances\/([a-f\d-]+)\/plugins\/([\w-]+)$/)) && method === 'PUT') return json(store.updatePlugin(match[1], match[2], body, session.username))
         if ((match = route.match(/^\/api\/orders\/([a-f\d-]+)\/paid$/)) && method === 'POST') return json(store.markPaid(match[1], body, session.username))
         if ((match = route.match(/^\/api\/orders\/([a-f\d-]+)\/maintenance$/)) && method === 'POST') return json(store.grantMaintenance(match[1], body, session.username))
         if ((match = route.match(/^\/api\/orders\/([a-f\d-]+)\/issue$/)) && method === 'POST') return json(store.issue(match[1], session.username))

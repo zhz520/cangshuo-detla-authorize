@@ -73,12 +73,9 @@ test('a valid signed client report updates its version and last-seen time',()=>{
  assert.throws(()=>store.reportVersion({...license,signature:(license.signature[0]==='A'?'B':'A')+license.signature.slice(1)},'9.9.9'),/签名无效|授权内容无效/)
  }finally{store.close()}
 })
-test('plugin credentials are validated and stored per customer instance',()=>{
- const {store}=fixture();try{const id=instance(store);assert(store.lists().plugins.some(plugin=>plugin.id==='wechat_pay'))
- assert.throws(()=>store.updatePlugin(id,'wechat_pay',{enabled:true,config:{merchantId:'123'}},'owner'),/填写/)
- const config={paymentMethods:['H5','JSAPI'],appId:'wx-test',merchantId:'1900000109',apiV3Key:'test-key',merchantSerialNo:'serial',privateKeyPath:'/app/cert/apiclient_key.pem',publicKeyId:'PUB_KEY_ID_TEST',publicKeyPath:'/app/cert/wxpay_public.pem',notifyUrl:'https://jaxapi.kkimg.top/api/pay/wx/notify',h5AppName:'Delta'}
- store.updatePlugin(id,'wechat_pay',{enabled:true,config},'owner');const row=store.lists().instancePlugins.find(item=>item.instance_id===id&&item.plugin_id==='wechat_pay');assert.equal(row.enabled,true);assert.equal(row.config.merchantId,'1900000109');assert(!JSON.stringify(store.lists().audit).includes('test-key'))
- }finally{store.close()}
+test('legacy instance plugin records are not exposed as the payment configuration model',()=>{
+ const {store}=fixture();try{instance(store);const data=store.lists();assert.equal(data.plugins,undefined);assert.equal(data.instancePlugins,undefined);assert(data.paymentProviders.some(provider=>provider.id==='wechat_pay'))}
+ finally{store.close()}
 })
 test('sessions are hashed, unauthorized access and CSRF and cross-origin writes are rejected',async()=>{
  const {store}=fixture();const server=createAuthorityServer(store);await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const base='http://127.0.0.1:'+server.address().port

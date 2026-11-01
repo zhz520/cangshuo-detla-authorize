@@ -151,8 +151,6 @@ export class AuthorityStore {
       orders: this.db.prepare('SELECT o.*,i.customer_id,c.name AS customer_name,m.name AS module_name FROM orders o JOIN instances i ON i.id=o.instance_id JOIN customers c ON c.id=i.customer_id JOIN modules m ON m.id=o.module_id ORDER BY o.created_at DESC').all(),
       licenses: this.db.prepare('SELECT l.id,l.order_id,l.instance_id,l.issued_at,l.expires_at,i.customer_id,i.domains FROM licenses l JOIN instances i ON i.id=l.instance_id ORDER BY l.issued_at DESC').all().map(row => ({...row, domains: JSON.parse(row.domains || '[]')})),
       releases: this.db.prepare('SELECT * FROM releases ORDER BY created_at DESC').all(),
-      plugins: this.db.prepare("SELECT * FROM plugins WHERE status='ACTIVE' ORDER BY category,id").all().map(row => ({...row, config_schema: JSON.parse(row.config_schema)})),
-      instancePlugins: this.db.prepare("SELECT ip.* FROM instance_plugins ip JOIN plugins p ON p.id=ip.plugin_id WHERE p.status='ACTIVE' ORDER BY instance_id,plugin_id").all().map(row => ({...row, enabled: row.enabled === 1, config: JSON.parse(row.config || '{}')})),
       audit: this.db.prepare('SELECT * FROM audit ORDER BY id DESC LIMIT 200').all(),
       ...this.management.lists()
     }

@@ -3,6 +3,19 @@ import { fail, identifier, text, timestamp, compareVersions } from './store.mjs'
 
 export const DEFAULT_PRODUCT = 'detla'
 export const stamp = () => new Date().toISOString()
+export const PAYMENT_METHODS = ['H5', 'JSAPI', 'NATIVE', 'APP']
+const WECHAT_PAY_FIELDS = [
+  {key:'appId',label:'支付关联 AppID',type:'text',required:true},
+  {key:'merchantId',label:'微信支付商户号',type:'text',required:true},
+  {key:'apiV3Key',label:'API v3 密钥',type:'password',required:true},
+  {key:'merchantSerialNo',label:'商户证书序列号',type:'text',required:true},
+  {key:'privateKeyPath',label:'商户私钥路径',type:'text',required:true},
+  {key:'publicKeyId',label:'微信支付公钥 ID',type:'text',required:true},
+  {key:'publicKeyPath',label:'微信支付公钥路径',type:'text',required:true},
+  {key:'notifyUrl',label:'支付回调地址',type:'text',required:true},
+  {key:'h5AppName',label:'H5 支付展示名称',type:'text',required:false},
+  {key:'h5Type',label:'H5 客户端类型（WAP/IOS/ANDROID）',type:'text',required:false}
+]
 export function emailAddress(value) {
   if (!/^[^\s<>@,;]+@[^\s<>@,;]+\.[^\s<>@,;]+$/.test(String(value || '')) || value.length > 254) fail('邮箱地址格式不正确')
   return value
@@ -24,8 +37,9 @@ export class Management {
       CREATE TABLE IF NOT EXISTS mail_settings (id INTEGER PRIMARY KEY CHECK(id=1), config TEXT NOT NULL, updated_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS mail_queue (id TEXT PRIMARY KEY, dedupe_key TEXT NOT NULL UNIQUE, project_id TEXT, event TEXT NOT NULL, recipient TEXT NOT NULL, subject TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'PENDING', attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT NOT NULL, last_error TEXT, created_at TEXT NOT NULL, sent_at TEXT);
       CREATE TABLE IF NOT EXISTS project_status_history (project_id TEXT PRIMARY KEY REFERENCES projects(id), status TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS payment_providers (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL, config_schema TEXT NOT NULL, config TEXT NOT NULL DEFAULT '{}', enabled INTEGER NOT NULL DEFAULT 0, methods TEXT NOT NULL DEFAULT '[]', updated_at TEXT NOT NULL, created_at TEXT NOT NULL);
     `)
-    for (const [table, column, definition] of [['instances','project_id','TEXT REFERENCES projects(id)'], ['modules','product_id',"TEXT NOT NULL DEFAULT 'detla'"]]) {
+    for (const [table, column, definition] of [['instances','project_id','TEXT REFERENCES projects(id)'], ['modules','product_id',"TEXT NOT NULL DEFAULT 'detla'"], ['projects','payment_provider',"TEXT NOT NULL DEFAULT ''"], ['projects','payment_methods',"TEXT NOT NULL DEFAULT '[]'"]]) {
       if (!this.db.prepare(`PRAGMA table_info(${table})`).all().some(row => row.name === column)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
     }
     store.transaction(() => {
@@ -40,6 +54,15 @@ export class Management {
         this.db.prepare('INSERT INTO metadata VALUES (?,?)').run('release_catalog_migrated','1')
       }
       this.db.prepare("UPDATE plugins SET status='RETIRED' WHERE id IN ('aliyun_sms','wechat_miniapp')").run()
+      this.db.prepare('INSERT OR IGNORE INTO payment_providers(id,name,description,config_schema,config,enabled,methods,updated_at,created_at) VALUES (?,?,?,?,?,?,?,?,?)').run('wechat_pay','微信支付','系统统一维护商户参数，项目选择是否接入及默认支付方式。',JSON.stringify(WECHAT_PAY_FIELDS),'{}',0,JSON.stringify(['H5','JSAPI']),stamp(),stamp())
+      const provider=this.db.prepare("SELECT config FROM payment_providers WHERE id='wechat_pay'").get()
+      if(provider?.config==='{}') {
+        const legacy=this.db.prepare("SELECT ip.config,ip.enabled FROM instance_plugins ip WHERE ip.plugin_id='wechat_pay' AND ip.config<>'{}' ORDER BY ip.updated_at DESC LIMIT 1").get()
+        if(legacy)try {
+          const legacyConfig=JSON.parse(legacy.config),methods=Array.isArray(legacyConfig.paymentMethods)?legacyConfig.paymentMethods:['H5','JSAPI'];delete legacyConfig.paymentMethods
+          this.db.prepare("UPDATE payment_providers SET config=?,enabled=?,methods=?,updated_at=? WHERE id='wechat_pay'").run(JSON.stringify(legacyConfig),legacy.enabled?1:0,JSON.stringify(methods),stamp())
+        }catch {}
+      }
     })
   }
   signed(format, claims) {
@@ -51,13 +74,13 @@ export class Management {
   }
   lists() {
     const products = this.db.prepare('SELECT p.*,EXISTS(SELECT 1 FROM github_tokens t WHERE t.product_id=p.id) AS token_configured FROM products p ORDER BY created_at').all()
-    const projects = this.db.prepare('SELECT p.*,c.name AS customer_name,s.name AS product_name,s.kind,s.repository FROM projects p JOIN customers c ON c.id=p.customer_id JOIN products s ON s.id=p.product_id ORDER BY p.created_at DESC').all().map(row => ({...row,effective_status:this.projectStatus(row)}))
+    const projects = this.db.prepare('SELECT p.*,c.name AS customer_name,s.name AS product_name,s.kind,s.repository,pay.name AS payment_provider_name,pay.enabled AS payment_provider_enabled FROM projects p JOIN customers c ON c.id=p.customer_id JOIN products s ON s.id=p.product_id LEFT JOIN payment_providers pay ON pay.id=p.payment_provider ORDER BY p.created_at DESC').all().map(row => ({...row,payment_methods:JSON.parse(row.payment_methods||'[]'),effective_status:this.projectStatus(row)}))
     const releases = this.db.prepare('SELECT r.*,p.name AS product_name FROM release_catalog r JOIN products p ON p.id=r.product_id ORDER BY r.published_at DESC,r.created_at DESC').all().map(row => ({...row,items:JSON.parse(row.items),assets:JSON.parse(row.assets)}))
-    const instances = this.db.prepare('SELECT i.*,c.name AS customer_name,p.name AS project_name,p.product_id,p.pause_policy,p.status AS project_status,p.maintenance_until AS project_maintenance_until FROM instances i JOIN customers c ON c.id=i.customer_id JOIN projects p ON p.id=i.project_id ORDER BY i.created_at DESC').all().map(row => {
+    const instances = this.db.prepare('SELECT i.*,c.name AS customer_name,p.name AS project_name,p.product_id,p.pause_policy,p.payment_provider,p.payment_methods,p.status AS project_status,p.maintenance_until AS project_maintenance_until FROM instances i JOIN customers c ON c.id=i.customer_id JOIN projects p ON p.id=i.project_id ORDER BY i.created_at DESC').all().map(row => {
       const latest = releases.filter(release => release.product_id===row.product_id && release.channel==='stable' && release.status==='PUBLISHED').sort((a,b)=>compareVersions(b.version,a.version))[0]?.version || null
-      return {...row,maintenance_until:row.project_maintenance_until,domains:JSON.parse(row.domains),latest_version:latest,update_available:!!(latest && row.client_version && compareVersions(latest,row.client_version)>0)}
+      return {...row,maintenance_until:row.project_maintenance_until,domains:JSON.parse(row.domains),payment_methods:JSON.parse(row.payment_methods||'[]'),latest_version:latest,update_available:!!(latest && row.client_version && compareVersions(latest,row.client_version)>0)}
     })
-    return {products,projects,releases,instances,mailSettings:this.mailSettings(),mailQueue:this.db.prepare('SELECT id,project_id,event,recipient,subject,status,attempts,next_attempt_at,last_error,created_at,sent_at FROM mail_queue ORDER BY created_at DESC LIMIT 200').all()}
+    return {products,projects,releases,instances,paymentProviders:this.paymentProviders(),mailSettings:this.mailSettings(),mailQueue:this.db.prepare('SELECT id,project_id,event,recipient,subject,status,attempts,next_attempt_at,last_error,created_at,sent_at FROM mail_queue ORDER BY created_at DESC LIMIT 200').all()}
   }
   saveProduct(id, body, actor) {
     id = identifier(id || body.id,'软件编号'); const name = text(body.name,'软件名称',80), repository = repositoryName(body.repository)
@@ -81,13 +104,21 @@ export class Management {
     const customerId = identifier(body.customerId || previous?.customer_id,'客户编号'), productId = identifier(body.productId || previous?.product_id,'软件编号'), name = text(body.name,'项目名称',80)
     const maintenanceUntil = timestamp(body.maintenanceUntil,'维护期至'), policy = body.pausePolicy || previous?.pause_policy || 'PENDING'
     const status = body.status || previous?.status || 'ACTIVE', email = body.notificationEmail ? emailAddress(body.notificationEmail.trim()) : ''
+    const paymentProvider = Object.prototype.hasOwnProperty.call(body,'paymentProvider')
+      ? String(body.paymentProvider || '').trim()
+      : (previous?.payment_provider || '')
+    const selectedProvider = paymentProvider ? this.db.prepare('SELECT * FROM payment_providers WHERE id=?').get(paymentProvider) : null
+    if (paymentProvider && (!selectedProvider || selectedProvider.enabled !== 1)) fail('先到支付设置启用该支付通道，再为项目接入')
+    const paymentMethods = selectedProvider ? [...new Set(Array.isArray(body.paymentMethods) ? body.paymentMethods : JSON.parse(previous?.payment_methods || '[]'))] : []
+    const supportedMethods = selectedProvider ? JSON.parse(selectedProvider.methods) : []
+    if (selectedProvider && (!paymentMethods.length || paymentMethods.some(method => !supportedMethods.includes(method)))) fail('请选择该支付通道已启用的默认支付方式')
     if (!['PENDING','STOP_ALL','FINISH_EXISTING'].includes(policy) || !['ACTIVE','PAUSED'].includes(status)) fail('暂停策略或状态不正确')
     if (previous && (previous.customer_id!==customerId || previous.product_id!==productId)) fail('项目所属客户和软件不可更改，请新建项目')
     return this.store.transaction(() => {
-      this.db.prepare('INSERT INTO projects(id,customer_id,product_id,name,maintenance_until,pause_policy,status,notification_email,created_at) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,maintenance_until=excluded.maintenance_until,pause_policy=excluded.pause_policy,status=excluded.status,notification_email=excluded.notification_email').run(id,customerId,productId,name,maintenanceUntil,policy,status,email,stamp())
+      this.db.prepare('INSERT INTO projects(id,customer_id,product_id,name,maintenance_until,pause_policy,status,notification_email,payment_provider,payment_methods,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,maintenance_until=excluded.maintenance_until,pause_policy=excluded.pause_policy,status=excluded.status,notification_email=excluded.notification_email,payment_provider=excluded.payment_provider,payment_methods=excluded.payment_methods').run(id,customerId,productId,name,maintenanceUntil,policy,status,email,paymentProvider,JSON.stringify(paymentMethods),stamp())
       this.db.prepare('UPDATE instances SET maintenance_until=? WHERE project_id=?').run(maintenanceUntil,id)
       for (const instance of this.db.prepare('SELECT id FROM instances WHERE project_id=?').all()) this.reconcileLicense(instance.id)
-      this.store.audit(actor,previous?'UPDATE_PROJECT':'CREATE_PROJECT',id,{maintenanceUntil,pausePolicy:policy,status})
+      this.store.audit(actor,previous?'UPDATE_PROJECT':'CREATE_PROJECT',id,{maintenanceUntil,pausePolicy:policy,status,paymentProvider,paymentMethods})
       if (previous && Date.parse(maintenanceUntil)>Date.parse(previous.maintenance_until)) this.queueProjectMail(id,'RENEWED',`renewed:${id}:${maintenanceUntil}`,'项目维护期已续期',`项目 ${name} 的维护期至 ${maintenanceUntil}，授权将自动同步。`)
       return {id}
     })
@@ -109,8 +140,9 @@ export class Management {
     return envelope
   }
   clientResponse(instanceId, version) {
-    const instance = this.db.prepare('SELECT i.*,p.product_id,p.maintenance_until AS until_at,p.pause_policy,p.status FROM instances i JOIN projects p ON p.id=i.project_id WHERE i.id=?').get(instanceId)
-    const project = this.signed('cangshuo-project-v1',{customerId:instance.customer_id,projectId:instance.project_id,productId:instance.product_id,instanceId,issuedAt:stamp(),maintenanceUntil:instance.until_at,status:instance.status,pausePolicy:instance.pause_policy,allowedDomains:JSON.parse(instance.domains)})
+    const instance = this.db.prepare('SELECT i.*,p.product_id,p.maintenance_until AS until_at,p.pause_policy,p.status,p.payment_provider,p.payment_methods,pay.enabled AS payment_enabled FROM instances i JOIN projects p ON p.id=i.project_id LEFT JOIN payment_providers pay ON pay.id=p.payment_provider WHERE i.id=?').get(instanceId)
+    const payment = instance.payment_provider && instance.payment_enabled === 1 ? {provider:instance.payment_provider,methods:JSON.parse(instance.payment_methods||'[]')} : null
+    const project = this.signed('cangshuo-project-v1',{customerId:instance.customer_id,projectId:instance.project_id,productId:instance.product_id,instanceId,issuedAt:stamp(),maintenanceUntil:instance.until_at,status:instance.status,pausePolicy:instance.pause_policy,allowedDomains:JSON.parse(instance.domains),payment})
     return {project,license:this.reconcileLicense(instanceId),updates:this.clientUpdates(instance.product_id,version)}
   }
   identity(instanceId,actor) {
@@ -142,6 +174,40 @@ export class Management {
     if (raw) return config
     const {password,...rest} = config
     return {...rest,hasPassword:!!password}
+  }
+  paymentProviders() {
+    return this.db.prepare('SELECT * FROM payment_providers ORDER BY name,id').all().map(row => {
+      const schema=JSON.parse(row.config_schema),config=JSON.parse(row.config||'{}'),masked={}
+      for(const [key,value] of Object.entries(config)) {
+        const field=schema.find(field=>field.key===key)
+        masked[key]=field?.type==='password'?'':value
+      }
+      return {...row,config_schema:schema,config:masked,enabled:row.enabled===1,methods:JSON.parse(row.methods||'[]'),secretsSet:schema.some(field=>field.type==='password'&&config[field.key])}
+    })
+  }
+  savePaymentProvider(id,body,actor) {
+    const provider=this.db.prepare('SELECT * FROM payment_providers WHERE id=?').get(identifier(id,'支付通道编号'))
+    if(!provider)fail('支付通道不存在',404)
+    if(!body||typeof body.config!=='object'||Array.isArray(body.config))fail('支付配置格式不正确')
+    const schema=JSON.parse(provider.config_schema),previous=JSON.parse(provider.config||'{}'),allowed=new Set(schema.map(field=>field.key)),config={}
+    for(const [key,value] of Object.entries(body.config)) {
+      if(!allowed.has(key))fail(`支付配置包含未知字段：${key}`)
+      const field=schema.find(field=>field.key===key)
+      if(field.type==='password') {if(value==null||value==='')continue;if(typeof value!=='string'||value.length>5000)fail(`${field.label}格式不正确`);config[key]=value.trim();continue}
+      if(typeof value!=='string'||value.length>5000||/[\r\n]/.test(value))fail(`支付配置 ${key} 格式不正确`)
+      if(value.trim())config[key]=value.trim()
+    }
+    for(const field of schema)if(previous[field.key]&&!config[field.key])config[field.key]=previous[field.key]
+    const methods=[...new Set(Array.isArray(body.methods)?body.methods:[])]
+    if(methods.length>PAYMENT_METHODS.length||methods.some(method=>!PAYMENT_METHODS.includes(method)))fail('支付方式选择不正确')
+    const enabled=body.enabled===true
+    if(enabled){if(!methods.length)fail('启用支付通道前至少选择一种支付方式');for(const field of schema.filter(field=>field.required))if(!config[field.key])fail(`启用前请填写${field.label}`)}
+    if(config.notifyUrl){try{const url=new URL(config.notifyUrl);if(!['http:','https:'].includes(url.protocol)||url.username||url.password)fail('支付回调地址不正确')}catch{fail('支付回调地址不正确')}}
+    return this.store.transaction(()=>{
+      this.db.prepare('UPDATE payment_providers SET config=?,enabled=?,methods=?,updated_at=? WHERE id=?').run(JSON.stringify(config),enabled?1:0,JSON.stringify(methods),stamp(),id)
+      this.store.audit(actor,'UPDATE_PAYMENT_PROVIDER',id,{enabled,methods,fields:Object.keys(config)})
+      return this.paymentProviders().find(row=>row.id===id)
+    })
   }
   saveMailSettings(body, actor) {
     const previous = this.mailSettings(true)
