@@ -110,3 +110,13 @@ test('payment credentials live in system settings while projects select enabled 
   store.management.saveProject(project,{name:'项目A',maintenanceUntil:'2029-01-01T00:00:00Z',paymentProvider:'',paymentMethods:[]},'owner');assert.equal(store.lists().projects[0].payment_provider,'');assert.deepEqual(store.lists().projects[0].payment_methods,[])
  }finally{f.close()}
 })
+test('project deposit, balance and collection notes are administrator-only commercial records',()=>{
+ const f=setup(),{store,project}=f;try{
+  store.management.saveProject(project,{name:'项目A',maintenanceUntil:'2029-01-01T00:00:00Z',depositAmountCents:150000,balanceAmountCents:350000,contractNote:'定金已收，尾款验收后支付'},'owner')
+  let row=store.lists().projects[0];assert.equal(row.deposit_amount_cents,150000);assert.equal(row.balance_amount_cents,350000);assert.equal(row.contract_total_cents,500000);assert.equal(row.contract_note,'定金已收，尾款验收后支付')
+  store.management.saveProject(project,{name:'项目A',maintenanceUntil:'2029-01-01T00:00:00Z'},'owner');row=store.lists().projects[0];assert.equal(row.deposit_amount_cents,150000);assert.equal(row.balance_amount_cents,350000)
+  assert.throws(()=>store.management.saveProject(project,{name:'项目A',maintenanceUntil:'2029-01-01T00:00:00Z',depositAmountCents:-1},'owner'),/项目定金/)
+  assert.throws(()=>store.management.saveProject(project,{name:'项目A',maintenanceUntil:'2029-01-01T00:00:00Z',balanceAmountCents:1.5},'owner'),/项目尾款/)
+  store.management.saveProject(project,{name:'项目A',maintenanceUntil:'2029-01-01T00:00:00Z',depositAmountCents:null,balanceAmountCents:null,contractNote:''},'owner');row=store.lists().projects[0];assert.equal(row.deposit_amount_cents,null);assert.equal(row.contract_total_cents,null)
+ }finally{f.close()}
+})

@@ -1,5 +1,5 @@
 import { randomUUID, sign } from 'node:crypto'
-import { fail, identifier, text, timestamp, compareVersions } from './store.mjs'
+import { fail, identifier, integer, text, timestamp, compareVersions } from './store.mjs'
 
 export const DEFAULT_PRODUCT = 'detla'
 export const stamp = () => new Date().toISOString()
@@ -39,7 +39,7 @@ export class Management {
       CREATE TABLE IF NOT EXISTS project_status_history (project_id TEXT PRIMARY KEY REFERENCES projects(id), status TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS payment_providers (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL, config_schema TEXT NOT NULL, config TEXT NOT NULL DEFAULT '{}', enabled INTEGER NOT NULL DEFAULT 0, methods TEXT NOT NULL DEFAULT '[]', updated_at TEXT NOT NULL, created_at TEXT NOT NULL);
     `)
-    for (const [table, column, definition] of [['instances','project_id','TEXT REFERENCES projects(id)'], ['modules','product_id',"TEXT NOT NULL DEFAULT 'detla'"], ['projects','payment_provider',"TEXT NOT NULL DEFAULT ''"], ['projects','payment_methods',"TEXT NOT NULL DEFAULT '[]'"]]) {
+    for (const [table, column, definition] of [['instances','project_id','TEXT REFERENCES projects(id)'], ['modules','product_id',"TEXT NOT NULL DEFAULT 'detla'"], ['projects','payment_provider',"TEXT NOT NULL DEFAULT ''"], ['projects','payment_methods',"TEXT NOT NULL DEFAULT '[]'"], ['projects','deposit_amount_cents','INTEGER'], ['projects','balance_amount_cents','INTEGER'], ['projects','contract_note',"TEXT NOT NULL DEFAULT ''"]]) {
       if (!this.db.prepare(`PRAGMA table_info(${table})`).all().some(row => row.name === column)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
     }
     store.transaction(() => {
@@ -74,7 +74,7 @@ export class Management {
   }
   lists() {
     const products = this.db.prepare('SELECT p.*,EXISTS(SELECT 1 FROM github_tokens t WHERE t.product_id=p.id) AS token_configured FROM products p ORDER BY created_at').all()
-    const projects = this.db.prepare('SELECT p.*,c.name AS customer_name,s.name AS product_name,s.kind,s.repository,pay.name AS payment_provider_name,pay.enabled AS payment_provider_enabled FROM projects p JOIN customers c ON c.id=p.customer_id JOIN products s ON s.id=p.product_id LEFT JOIN payment_providers pay ON pay.id=p.payment_provider ORDER BY p.created_at DESC').all().map(row => ({...row,payment_methods:JSON.parse(row.payment_methods||'[]'),effective_status:this.projectStatus(row)}))
+    const projects = this.db.prepare('SELECT p.*,c.name AS customer_name,s.name AS product_name,s.kind,s.repository,pay.name AS payment_provider_name,pay.enabled AS payment_provider_enabled FROM projects p JOIN customers c ON c.id=p.customer_id JOIN products s ON s.id=p.product_id LEFT JOIN payment_providers pay ON pay.id=p.payment_provider ORDER BY p.created_at DESC').all().map(row => ({...row,payment_methods:JSON.parse(row.payment_methods||'[]'),contract_total_cents:row.deposit_amount_cents==null&&row.balance_amount_cents==null?null:(row.deposit_amount_cents||0)+(row.balance_amount_cents||0),effective_status:this.projectStatus(row)}))
     const releases = this.db.prepare('SELECT r.*,p.name AS product_name FROM release_catalog r JOIN products p ON p.id=r.product_id ORDER BY r.published_at DESC,r.created_at DESC').all().map(row => ({...row,items:JSON.parse(row.items),assets:JSON.parse(row.assets)}))
     const instances = this.db.prepare('SELECT i.*,c.name AS customer_name,p.name AS project_name,p.product_id,p.pause_policy,p.payment_provider,p.payment_methods,p.status AS project_status,p.maintenance_until AS project_maintenance_until FROM instances i JOIN customers c ON c.id=i.customer_id JOIN projects p ON p.id=i.project_id ORDER BY i.created_at DESC').all().map(row => {
       const latest = releases.filter(release => release.product_id===row.product_id && release.channel==='stable' && release.status==='PUBLISHED').sort((a,b)=>compareVersions(b.version,a.version))[0]?.version || null
@@ -112,13 +112,21 @@ export class Management {
     const paymentMethods = selectedProvider ? [...new Set(Array.isArray(body.paymentMethods) ? body.paymentMethods : JSON.parse(previous?.payment_methods || '[]'))] : []
     const supportedMethods = selectedProvider ? JSON.parse(selectedProvider.methods) : []
     if (selectedProvider && (!paymentMethods.length || paymentMethods.some(method => !supportedMethods.includes(method)))) fail('请选择该支付通道已启用的默认支付方式')
+    const amount=(key,label,fallback)=> {
+      if(!Object.prototype.hasOwnProperty.call(body,key))return fallback ?? null
+      if(body[key]==null||body[key]==='')return null
+      return integer(body[key],label,0,100000000000)
+    }
+    const depositAmountCents=amount('depositAmountCents','项目定金',previous?.deposit_amount_cents)
+    const balanceAmountCents=amount('balanceAmountCents','项目尾款',previous?.balance_amount_cents)
+    const contractNote=body.contractNote===undefined?String(previous?.contract_note||''):String(body.contractNote||'').trim().slice(0,500)
     if (!['PENDING','STOP_ALL','FINISH_EXISTING'].includes(policy) || !['ACTIVE','PAUSED'].includes(status)) fail('暂停策略或状态不正确')
     if (previous && (previous.customer_id!==customerId || previous.product_id!==productId)) fail('项目所属客户和软件不可更改，请新建项目')
     return this.store.transaction(() => {
-      this.db.prepare('INSERT INTO projects(id,customer_id,product_id,name,maintenance_until,pause_policy,status,notification_email,payment_provider,payment_methods,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,maintenance_until=excluded.maintenance_until,pause_policy=excluded.pause_policy,status=excluded.status,notification_email=excluded.notification_email,payment_provider=excluded.payment_provider,payment_methods=excluded.payment_methods').run(id,customerId,productId,name,maintenanceUntil,policy,status,email,paymentProvider,JSON.stringify(paymentMethods),stamp())
+      this.db.prepare('INSERT INTO projects(id,customer_id,product_id,name,maintenance_until,pause_policy,status,notification_email,payment_provider,payment_methods,deposit_amount_cents,balance_amount_cents,contract_note,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,maintenance_until=excluded.maintenance_until,pause_policy=excluded.pause_policy,status=excluded.status,notification_email=excluded.notification_email,payment_provider=excluded.payment_provider,payment_methods=excluded.payment_methods,deposit_amount_cents=excluded.deposit_amount_cents,balance_amount_cents=excluded.balance_amount_cents,contract_note=excluded.contract_note').run(id,customerId,productId,name,maintenanceUntil,policy,status,email,paymentProvider,JSON.stringify(paymentMethods),depositAmountCents,balanceAmountCents,contractNote,stamp())
       this.db.prepare('UPDATE instances SET maintenance_until=? WHERE project_id=?').run(maintenanceUntil,id)
       for (const instance of this.db.prepare('SELECT id FROM instances WHERE project_id=?').all()) this.reconcileLicense(instance.id)
-      this.store.audit(actor,previous?'UPDATE_PROJECT':'CREATE_PROJECT',id,{maintenanceUntil,pausePolicy:policy,status,paymentProvider,paymentMethods})
+      this.store.audit(actor,previous?'UPDATE_PROJECT':'CREATE_PROJECT',id,{maintenanceUntil,pausePolicy:policy,status,paymentProvider,paymentMethods,depositAmountCents,balanceAmountCents,contractNote})
       if (previous && Date.parse(maintenanceUntil)>Date.parse(previous.maintenance_until)) this.queueProjectMail(id,'RENEWED',`renewed:${id}:${maintenanceUntil}`,'项目维护期已续期',`项目 ${name} 的维护期至 ${maintenanceUntil}，授权将自动同步。`)
       return {id}
     })
