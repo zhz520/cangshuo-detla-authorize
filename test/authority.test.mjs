@@ -44,7 +44,7 @@ test('renewals retain snapshots and authorization expiry follows the extended ma
  }finally{store.close()}
 })
 test('older client versions, invalid prices and unsafe release links are rejected',()=>{
- const {store}=fixture();try{const id=instance(store,'1.0.0');moduleReady(store)
+ const {store}=fixture();try{const id=instance(store);store.db.prepare("UPDATE instances SET client_version='1.0.0' WHERE id=?").run(id);moduleReady(store)
  assert.throws(()=>store.createOrder({instanceId:id,moduleId:'advanced_income_reports'},'owner'),/先升级/)
  assert.throws(()=>store.updateModule('advanced_income_reports',{priceCents:-1,termDays:30,status:'ACTIVE'},'owner'),/价格/)
  assert.throws(()=>store.updateModule('advanced_income_reports',{priceCents:0.1,termDays:30,status:'ACTIVE'},'owner'),/整数/)
@@ -65,6 +65,19 @@ test('licenses are bound to allowed domains and the maintenance expiry',()=>{
 })
 test('maintenance activation is recorded without pretending it was an online payment',()=>{
  const {store}=fixture();try{const id=instance(store);moduleReady(store);const order=store.createOrder({instanceId:id,moduleId:'advanced_income_reports'},'owner');store.grantMaintenance(order.id,{note:'年度维护已经续签，未走在线收款'},'owner');const row=store.lists().orders.find(item=>item.id===order.id);assert.equal(row.status,'MAINTENANCE');assert.equal(row.paid_at,null);assert.match(row.payment_reference,/未走在线收款/);assert(store.issue(order.id,'owner').envelope.signature)
+ }finally{store.close()}
+})
+test('a valid signed client report updates its version and last-seen time',()=>{
+ const {store}=fixture();try{const id=instance(store);moduleReady(store);const order=store.createOrder({instanceId:id,moduleId:'advanced_income_reports'},'owner');store.grantMaintenance(order.id,{note:'test'},'owner');const license=store.issue(order.id,'owner').envelope
+ const report=store.reportVersion(license,'1.1.0-preview.2');assert.equal(report.instanceId,id);let row=store.lists().instances.find(item=>item.id===id);assert.equal(row.client_version,'1.1.0-preview.2');assert(row.last_seen_at)
+ assert.throws(()=>store.reportVersion({...license,signature:license.signature.slice(0,-1)+'A'},'9.9.9'),/签名无效|授权内容无效/)
+ }finally{store.close()}
+})
+test('plugin credentials are validated and stored per customer instance',()=>{
+ const {store}=fixture();try{const id=instance(store);assert(store.lists().plugins.some(plugin=>plugin.id==='wechat_pay'))
+ assert.throws(()=>store.updatePlugin(id,'wechat_pay',{enabled:true,config:{merchantId:'123'}},'owner'),/填写/)
+ const config={appId:'wx-test',merchantId:'1900000109',apiV3Key:'test-key',merchantSerialNo:'serial',privateKeyPath:'/app/cert/apiclient_key.pem',publicKeyId:'PUB_KEY_ID_TEST',publicKeyPath:'/app/cert/wxpay_public.pem',notifyUrl:'https://jaxapi.kkimg.top/api/pay/wx/notify',h5AppName:'Delta'}
+ store.updatePlugin(id,'wechat_pay',{enabled:true,config},'owner');const row=store.lists().instancePlugins.find(item=>item.instance_id===id&&item.plugin_id==='wechat_pay');assert.equal(row.enabled,true);assert.equal(row.config.merchantId,'1900000109');assert(!JSON.stringify(store.lists().audit).includes('test-key'))
  }finally{store.close()}
 })
 test('sessions are hashed, unauthorized access and CSRF and cross-origin writes are rejected',async()=>{

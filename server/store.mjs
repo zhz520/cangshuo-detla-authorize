@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite'
-import { createHash, createPrivateKey, createPublicKey, randomBytes, randomUUID, scryptSync, sign, timingSafeEqual } from 'node:crypto'
+import { createHash, createPrivateKey, createPublicKey, randomBytes, randomUUID, scryptSync, sign, timingSafeEqual, verify } from 'node:crypto'
 import { mkdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 
@@ -60,16 +60,19 @@ export class AuthorityStore {
       CREATE TABLE IF NOT EXISTS owners (username TEXT PRIMARY KEY, password_hash TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, csrf TEXT NOT NULL, username TEXT NOT NULL, expires_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS customers (id TEXT PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'ACTIVE', note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS instances (id TEXT PRIMARY KEY, customer_id TEXT NOT NULL REFERENCES customers(id), name TEXT NOT NULL, domain TEXT NOT NULL DEFAULT '', domains TEXT NOT NULL DEFAULT '[]', maintenance_until TEXT NOT NULL DEFAULT '', client_version TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS instances (id TEXT PRIMARY KEY, customer_id TEXT NOT NULL REFERENCES customers(id), name TEXT NOT NULL, domain TEXT NOT NULL DEFAULT '', domains TEXT NOT NULL DEFAULT '[]', maintenance_until TEXT NOT NULL DEFAULT '', client_version TEXT NOT NULL DEFAULT '', last_seen_at TEXT, created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS modules (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL, price_cents INTEGER CHECK(price_cents>=0), term_days INTEGER NOT NULL, status TEXT NOT NULL, min_version TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS orders (id TEXT PRIMARY KEY, instance_id TEXT NOT NULL REFERENCES instances(id), module_id TEXT NOT NULL REFERENCES modules(id), amount_cents INTEGER NOT NULL, term_days INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'UNPAID', payment_reference TEXT, paid_at TEXT, granted_at TEXT, created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS entitlements (instance_id TEXT NOT NULL REFERENCES instances(id), module_id TEXT NOT NULL REFERENCES modules(id), valid_from TEXT NOT NULL, valid_until TEXT, PRIMARY KEY(instance_id,module_id));
       CREATE TABLE IF NOT EXISTS licenses (id TEXT PRIMARY KEY, order_id TEXT NOT NULL UNIQUE REFERENCES orders(id), instance_id TEXT NOT NULL REFERENCES instances(id), issued_at TEXT NOT NULL, expires_at TEXT, envelope TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS releases (version TEXT PRIMARY KEY, channel TEXT NOT NULL, notes TEXT NOT NULL, source_url TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'DRAFT', created_at TEXT NOT NULL, published_at TEXT);
+      CREATE TABLE IF NOT EXISTS plugins (id TEXT PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL, description TEXT NOT NULL, config_schema TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'ACTIVE', created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS instance_plugins (instance_id TEXT NOT NULL REFERENCES instances(id), plugin_id TEXT NOT NULL REFERENCES plugins(id), enabled INTEGER NOT NULL DEFAULT 0, config TEXT NOT NULL DEFAULT '{}', updated_at TEXT NOT NULL, PRIMARY KEY(instance_id,plugin_id));
       CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL, detail TEXT NOT NULL, created_at TEXT NOT NULL);`)
     const instanceColumns = new Set(this.db.prepare('PRAGMA table_info(instances)').all().map(column => column.name))
     if (!instanceColumns.has('domains')) this.db.exec("ALTER TABLE instances ADD COLUMN domains TEXT NOT NULL DEFAULT '[]'")
     if (!instanceColumns.has('maintenance_until')) this.db.exec("ALTER TABLE instances ADD COLUMN maintenance_until TEXT NOT NULL DEFAULT ''")
+    if (!instanceColumns.has('last_seen_at')) this.db.exec('ALTER TABLE instances ADD COLUMN last_seen_at TEXT')
     const fingerprint = digest(this.publicKey)
     const existing = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('signing_key')
     if (existing && existing.value !== fingerprint) throw new Error('签发密钥与数据库不匹配，拒绝自动更换签发身份')
@@ -79,6 +82,35 @@ export class AuthorityStore {
       this.db.prepare('INSERT INTO owners VALUES (?,?)').run(ownerUsername, passwordHash(ownerPassword))
     }
     this.db.prepare('INSERT OR IGNORE INTO modules VALUES (?,?,?,?,?,?,?)').run('advanced_income_reports', '收益对比分析', '客户侧已实现的等长周期收益对比及汇总导出模块。', null, 365, 'DRAFT', '1.1.0-preview.2')
+    const plugins = [
+      ['wechat_pay','微信支付','支付','配置客户实例的微信支付商户参数，由运营后台集中维护。',[
+        {key:'appId',label:'关联小程序 AppID',type:'text',required:true},
+        {key:'merchantId',label:'商户号',type:'text',required:true},
+        {key:'apiV3Key',label:'API v3 密钥',type:'password',required:true},
+        {key:'merchantSerialNo',label:'商户证书序列号',type:'text',required:true},
+        {key:'privateKeyPath',label:'商户私钥路径',type:'text',required:true},
+        {key:'publicKeyId',label:'微信支付公钥 ID',type:'text',required:true},
+        {key:'publicKeyPath',label:'微信支付公钥路径',type:'text',required:true},
+        {key:'notifyUrl',label:'支付回调地址',type:'text',required:true},
+        {key:'h5AppName',label:'H5 支付展示名称',type:'text',required:false},
+        {key:'h5Type',label:'H5 客户端类型（WAP/IOS/ANDROID）',type:'text',required:false},
+      ]],
+      ['wechat_miniapp','微信小程序','渠道','配置小程序 AppID、Secret 和订阅消息模板。',[
+        {key:'appId',label:'AppID',type:'text',required:true},
+        {key:'secret',label:'AppSecret',type:'password',required:true},
+        {key:'orderStatusTemplate',label:'订单状态模板 ID',type:'text',required:false},
+        {key:'incomeTemplate',label:'收入模板 ID',type:'text',required:false},
+      ]],
+      ['aliyun_sms','阿里云短信','通知','配置短信签名、AccessKey 和模板。',[
+        {key:'accessKeyId',label:'AccessKey ID',type:'text',required:true},
+        {key:'accessKeySecret',label:'AccessKey Secret',type:'password',required:true},
+        {key:'signName',label:'短信签名',type:'text',required:true},
+        {key:'endpoint',label:'Endpoint',type:'text',required:false},
+        {key:'messageTemplate',label:'消息提醒模板 Code',type:'text',required:false},
+      ]]
+    ]
+    const addPlugin = this.db.prepare('INSERT INTO plugins VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,category=excluded.category,description=excluded.description,config_schema=excluded.config_schema')
+    for (const [id,name,category,description,schema] of plugins) addPlugin.run(id,name,category,description,JSON.stringify(schema),'ACTIVE',now())
   }
   close() { this.db.close() }
   audit(actor, action, target, detail = {}) { this.db.prepare('INSERT INTO audit(actor,action,target,detail,created_at) VALUES (?,?,?,?,?)').run(actor, action, target, JSON.stringify(detail), now()) }
@@ -100,13 +132,21 @@ export class AuthorityStore {
   }
   logout(token) { if (token) this.db.prepare('DELETE FROM sessions WHERE token_hash=?').run(digest(token)) }
   lists() {
+    const latestStable = this.db.prepare("SELECT version FROM releases WHERE status='PUBLISHED' AND channel='stable' ORDER BY published_at DESC LIMIT 1").get()?.version || null
+    const instances = this.db.prepare('SELECT i.*,c.name AS customer_name FROM instances i JOIN customers c ON c.id=i.customer_id ORDER BY i.created_at DESC').all().map(row => {
+      let updateAvailable = false
+      if (row.client_version && latestStable) try { updateAvailable = compareVersions(row.client_version, latestStable) < 0 } catch {}
+      return {...row, domains: JSON.parse(row.domains || '[]'), latest_version: latestStable, update_available: updateAvailable}
+    })
     return {
       customers: this.db.prepare('SELECT * FROM customers ORDER BY created_at DESC').all(),
-      instances: this.db.prepare('SELECT i.*,c.name AS customer_name FROM instances i JOIN customers c ON c.id=i.customer_id ORDER BY i.created_at DESC').all().map(row => ({...row, domains: JSON.parse(row.domains || '[]')})),
+      instances,
       modules: this.db.prepare('SELECT * FROM modules ORDER BY id').all(),
       orders: this.db.prepare('SELECT o.*,i.customer_id,c.name AS customer_name,m.name AS module_name FROM orders o JOIN instances i ON i.id=o.instance_id JOIN customers c ON c.id=i.customer_id JOIN modules m ON m.id=o.module_id ORDER BY o.created_at DESC').all(),
       licenses: this.db.prepare('SELECT l.id,l.order_id,l.instance_id,l.issued_at,l.expires_at,i.customer_id,i.domains FROM licenses l JOIN instances i ON i.id=l.instance_id ORDER BY l.issued_at DESC').all().map(row => ({...row, domains: JSON.parse(row.domains || '[]')})),
       releases: this.db.prepare('SELECT * FROM releases ORDER BY created_at DESC').all(),
+      plugins: this.db.prepare('SELECT * FROM plugins ORDER BY category,id').all().map(row => ({...row, config_schema: JSON.parse(row.config_schema)})),
+      instancePlugins: this.db.prepare('SELECT * FROM instance_plugins ORDER BY instance_id,plugin_id').all().map(row => ({...row, enabled: row.enabled === 1, config: JSON.parse(row.config || '{}')})),
       audit: this.db.prepare('SELECT * FROM audit ORDER BY id DESC LIMIT 200').all()
     }
   }
@@ -119,21 +159,20 @@ export class AuthorityStore {
     if (!/^[a-f\d]{8}-(?:[a-f\d]{4}-){3}[a-f\d]{12}$/.test(id)) fail('请复制客户后台显示的小写 UUID 实例编号')
     const customer = this.db.prepare('SELECT * FROM customers WHERE id=?').get(identifier(body.customerId, '客户编号'))
     if (!customer || customer.status !== 'ACTIVE') fail('客户不存在或未启用')
-    const name = text(body.name, '实例名称', 80), version = text(body.clientVersion, '客户端版本', 80)
-    compareVersions(version, version)
+    const name = text(body.name, '实例名称', 80)
     let domain = ''
     const allowedDomains = domains(body.domains), maintenanceUntil = timestamp(body.maintenanceUntil, '维护期至')
     if (Date.parse(maintenanceUntil) <= Date.now()) fail('维护期必须晚于当前时间')
     if (body.domain) { const host = domainName(body.domain, '客户后台地址'); domain = 'https://' + host }
-    return this.transaction(() => { this.db.prepare('INSERT INTO instances VALUES (?,?,?,?,?,?,?,?)').run(id, customer.id, name, domain, JSON.stringify(allowedDomains), maintenanceUntil, version, now()); this.audit(actor, 'CREATE_INSTANCE', id, { customerId: customer.id, domains: allowedDomains, maintenanceUntil }); return { id } })
+    return this.transaction(() => { this.db.prepare('INSERT INTO instances(id,customer_id,name,domain,domains,maintenance_until,client_version,last_seen_at,created_at) VALUES (?,?,?,?,?,?,?,?,?)').run(id, customer.id, name, domain, JSON.stringify(allowedDomains), maintenanceUntil, '', null, now()); this.audit(actor, 'CREATE_INSTANCE', id, { customerId: customer.id, domains: allowedDomains, maintenanceUntil }); return { id } })
   }
   updateInstance(id, body, actor) {
     const instance = this.db.prepare('SELECT * FROM instances WHERE id=?').get(text(id, '实例编号', 36))
     if (!instance) fail('实例不存在', 404)
-    const name = text(body.name, '实例名称', 80), version = text(body.clientVersion, '客户端版本', 80); compareVersions(version, version)
+    const name = text(body.name, '实例名称', 80)
     const allowedDomains = domains(body.domains), maintenanceUntil = timestamp(body.maintenanceUntil, '维护期至')
     if (Date.parse(maintenanceUntil) <= Date.now()) fail('维护期必须晚于当前时间')
-    return this.transaction(() => { this.db.prepare('UPDATE instances SET name=?,domains=?,maintenance_until=?,client_version=? WHERE id=?').run(name, JSON.stringify(allowedDomains), maintenanceUntil, version, id); this.audit(actor, 'UPDATE_INSTANCE', id, { domains: allowedDomains, maintenanceUntil, clientVersion: version }); return { id } })
+    return this.transaction(() => { this.db.prepare('UPDATE instances SET name=?,domains=?,maintenance_until=? WHERE id=?').run(name, JSON.stringify(allowedDomains), maintenanceUntil, id); this.audit(actor, 'UPDATE_INSTANCE', id, { domains: allowedDomains, maintenanceUntil }); return { id } })
   }
   updateModule(id, body, actor) {
     if (!this.db.prepare('SELECT id FROM modules WHERE id=?').get(id)) fail('模块不存在', 404)
@@ -148,7 +187,7 @@ export class AuthorityStore {
     const module = this.db.prepare('SELECT * FROM modules WHERE id=?').get(moduleId)
     if (!instance || instance.status !== 'ACTIVE') fail('实例或客户不存在/已停用')
     if (!module || module.status !== 'ACTIVE' || module.price_cents == null) fail('模块尚未定价上架')
-    if (compareVersions(instance.client_version, module.min_version) < 0) fail(`此模块要求客户端 ${module.min_version} 或更新版本，请先升级客户系统`, 409)
+    if (instance.client_version && compareVersions(instance.client_version, module.min_version) < 0) fail(`此模块要求客户端 ${module.min_version} 或更新版本，请先升级客户系统`, 409)
     if (!instance.maintenance_until || Date.parse(instance.maintenance_until) <= Date.now()) fail('请先设置有效的维护期，维护期是授权到期时间', 409)
     if (this.db.prepare("SELECT id FROM orders WHERE instance_id=? AND module_id=? AND status='UNPAID'").get(instanceId, moduleId)) fail('该实例已有此模块的待收款订单', 409)
     const entitlement = this.db.prepare('SELECT valid_until FROM entitlements WHERE instance_id=? AND module_id=?').get(instanceId, moduleId)
@@ -203,6 +242,41 @@ export class AuthorityStore {
     })
   }
   license(id) { const row = this.db.prepare('SELECT envelope FROM licenses WHERE id=?').get(id); if (!row) fail('授权不存在', 404); return JSON.parse(row.envelope) }
+  updatePlugin(instanceId, pluginId, body, actor) {
+    const instance = this.db.prepare('SELECT * FROM instances WHERE id=?').get(text(instanceId, '实例编号', 36))
+    const plugin = this.db.prepare('SELECT * FROM plugins WHERE id=?').get(identifier(pluginId, '插件编号'))
+    if (!instance || !plugin) fail('实例或插件不存在', 404)
+    if (typeof body.enabled !== 'boolean' || !body.config || typeof body.config !== 'object' || Array.isArray(body.config)) fail('插件启用状态或配置格式不正确')
+    const schema = JSON.parse(plugin.config_schema), allowed = new Set(schema.map(field => field.key)), clean = {}
+    for (const [key,value] of Object.entries(body.config)) {
+      if (!allowed.has(key)) fail(`插件配置包含未知字段：${key}`)
+      if (typeof value !== 'string' || value.length > 5000) fail(`插件配置 ${key} 格式不正确`)
+      if (value.trim()) clean[key] = value.trim()
+    }
+    if (body.enabled) for (const field of schema.filter(field => field.required)) if (!clean[field.key]) fail(`启用前请填写${field.label}`)
+    const config = JSON.stringify(clean)
+    return this.transaction(() => {
+      this.db.prepare('INSERT INTO instance_plugins(instance_id,plugin_id,enabled,config,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(instance_id,plugin_id) DO UPDATE SET enabled=excluded.enabled,config=excluded.config,updated_at=excluded.updated_at').run(instanceId,pluginId,body.enabled?1:0,config,now())
+      this.audit(actor, 'UPDATE_PLUGIN', `${instanceId}:${pluginId}`, { enabled: body.enabled, fields: Object.keys(clean) })
+      return { instanceId, pluginId, enabled: body.enabled, config: JSON.parse(config) }
+    })
+  }
+  reportVersion(license, version) {
+    if (!license || license.format !== 'delta-license-v1' || typeof license.payload !== 'string' || typeof license.signature !== 'string') fail('客户端授权信息无效', 401)
+    version = text(version, '客户端版本', 80); compareVersions(version, version)
+    if (!verify(null, Buffer.from('delta-license-v1.' + license.payload), this.publicKey, Buffer.from(license.signature, 'base64url'))) fail('客户端授权签名无效', 401)
+    let claims
+    try { claims = JSON.parse(Buffer.from(license.payload, 'base64url')) } catch { fail('客户端授权内容无效', 401) }
+    if (claims.instanceId == null || claims.customerId == null || (claims.expiresAt && Date.parse(claims.expiresAt) <= Date.now())) fail('客户端授权已失效', 401)
+    const instance = this.db.prepare('SELECT * FROM instances WHERE id=?').get(claims.instanceId)
+    if (!instance || instance.customer_id !== claims.customerId) fail('授权实例不存在或客户不匹配', 403)
+    const reportedAt = now()
+    this.transaction(() => {
+      this.db.prepare('UPDATE instances SET client_version=?,last_seen_at=? WHERE id=?').run(version, reportedAt, instance.id)
+      if (instance.client_version !== version) this.audit('client', 'CLIENT_VERSION_REPORT', instance.id, { from: instance.client_version, to: version })
+    })
+    return { accepted: true, instanceId: instance.id, version, reportedAt }
+  }
   createRelease(body, actor) {
     const version = text(body.version, '版本号', 80)
     if (!/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(version)) fail('版本号须为语义版本格式')

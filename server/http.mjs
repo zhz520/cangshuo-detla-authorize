@@ -34,6 +34,9 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
         if (!body || typeof body !== 'object' || Array.isArray(body)) fail('请求内容须为对象')
       }
       if (route === '/health' && method === 'GET') return json({ ok: true, service: 'cangshuo-detla-authorize' })
+      if (route === '/api/client/report' && method === 'POST') {
+        return json(store.reportVersion(body.license, body.version))
+      }
       const token = (request.headers.cookie || '').split(';').map(value => value.trim()).find(value => value.startsWith('authority_session='))?.slice(18)
       if (route === '/api/login' && method === 'POST') {
         const bucket = String(request.socket.remoteAddress), time = Date.now()
@@ -63,6 +66,7 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
         let match
         if ((match = route.match(/^\/api\/instances\/([a-f\d-]+)$/)) && method === 'PUT') return json(store.updateInstance(match[1], body, session.username))
         if ((match = route.match(/^\/api\/modules\/([\w-]+)$/)) && method === 'PUT') return json(store.updateModule(match[1], body, session.username))
+        if ((match = route.match(/^\/api\/instances\/([a-f\d-]+)\/plugins\/([\w-]+)$/)) && method === 'PUT') return json(store.updatePlugin(match[1], match[2], body, session.username))
         if ((match = route.match(/^\/api\/orders\/([a-f\d-]+)\/paid$/)) && method === 'POST') return json(store.markPaid(match[1], body, session.username))
         if ((match = route.match(/^\/api\/orders\/([a-f\d-]+)\/maintenance$/)) && method === 'POST') return json(store.grantMaintenance(match[1], body, session.username))
         if ((match = route.match(/^\/api\/orders\/([a-f\d-]+)\/issue$/)) && method === 'POST') return json(store.issue(match[1], session.username))
