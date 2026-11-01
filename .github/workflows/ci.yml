@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   validate:
     runs-on: ubuntu-latest
@@ -36,7 +40,7 @@ jobs:
           npm run verify:isolation
       - name: Test and build backend
         working-directory: delta-game
-        run: mvn --batch-mode -pl delta-admin -am verify
+        run: mvn --batch-mode --settings ../.github/maven-settings.xml -pl delta-admin -am verify
       - name: Install admin dependencies
         working-directory: delta-admin-ui
         run: npm ci
