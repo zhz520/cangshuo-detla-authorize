@@ -1,0 +1,62 @@
+name: System validation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            delta-admin-ui/package-lock.json
+            delta-mp/package-lock.json
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          cache-dependency-path: 'delta-game/**/pom.xml'
+      - name: Check licensing and customer isolation
+        run: |
+          npm run test:licensing
+          npm run verify:isolation
+      - name: Test and build backend
+        working-directory: delta-game
+        run: mvn --batch-mode -pl delta-admin -am verify
+      - name: Install admin dependencies
+        working-directory: delta-admin-ui
+        run: npm ci
+      - name: Build admin
+        run: npm run build:admin
+      - name: Install H5 dependencies
+        working-directory: delta-mp
+        run: npm ci
+      - name: Build H5
+        working-directory: delta-mp
+        env:
+          UNI_INPUT_DIR: ${{ github.workspace }}/delta-mp
+        run: npx --no-install uni build -p h5
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: preview-build-${{ github.sha }}
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            delta-game/delta-admin/target/delta-admin.jar
+            delta-admin-ui/dist/
+            delta-mp/dist/build/h5/
+            delta-game/delta-admin/src/main/resources/platform/catalog.json

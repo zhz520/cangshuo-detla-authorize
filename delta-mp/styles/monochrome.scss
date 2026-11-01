@@ -1,0 +1,52 @@
+/* Shared finish for all three mobile roles. Page geometry stays in each page. */
+page {
+  --ui-ink: #17191c;
+  --ui-muted: #73777e;
+  --ui-surface: #ffffff;
+  --ui-canvas: #f7f8f9;
+  --ui-line: #e6e7e9;
+  --ui-danger: #c94f59;
+  background: var(--ui-canvas);
+  color: var(--ui-ink);
+  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+button, input, textarea {
+  font-family: inherit;
+}
+
+button[disabled] {
+  opacity: 0.45;
+}
+
+.custom-tabbar {
+  box-shadow: 0 -1rpx 0 rgba(23, 25, 28, 0.03);
+}
+
+.quick-icon, .menu-icon {
+  filter: grayscale(1) brightness(0.25);
+}
+
+.empty-image {
+  filter: grayscale(1);
+}
+
+/* Keep supplied product photos, avatars and operating content in full colour. */
+.gold-dust-wrap, .gold-dust-canvas {
+  opacity: 0.035;
+  filter: grayscale(1);
+}
+
+/* #ifdef H5 */
+uni-page-head .uni-page-head {
+  background: #ffffff !important;
+  color: #17191c;
+  border-bottom: 1px solid #f0f1f2;
+}
+
+:focus-visible {
+  outline: 2px solid #73777e;
+  outline-offset: 3px;
+}
+/* #endif */

@@ -1,0 +1,39 @@
+{
+  "name": "delta-mp",
+  "version": "1.0.0",
+  "description": "斜阳电竞服务平台小程序",
+  "main": "main.js",
+  "scripts": {
+    "dev:h5": "set UNI_INPUT_DIR=%cd%&& uni -p h5",
+    "build:h5": "set UNI_INPUT_DIR=%cd%&& uni build -p h5",
+    "dev:mp-weixin": "set UNI_INPUT_DIR=%cd%&& uni -p mp-weixin --mode mp-weixin",
+    "build:mp-weixin": "set UNI_INPUT_DIR=%cd%&& uni build -p mp-weixin --mode mp-weixin"
+  },
+  "dependencies": {
+    "@dcloudio/uni-app": "3.0.0-5030320261023001",
+    "@dcloudio/uni-app-plus": "3.0.0-5030320261023001",
+    "@dcloudio/uni-components": "3.0.0-5030320261023001",
+    "@dcloudio/uni-h5": "3.0.0-5030320261023001",
+    "@dcloudio/uni-mp-weixin": "3.0.0-5030320261023001",
+    "pinia": "2.1.7",
+    "vue": "3.5.44",
+    "vue-demi": "^0.14.10"
+  },
+  "devDependencies": {
+    "@dcloudio/types": "3.4.31",
+    "@dcloudio/uni-automator": "3.0.0-5030320261023001",
+    "@dcloudio/uni-cli-shared": "3.0.0-5030320261023001",
+    "@dcloudio/uni-stacktracey": "3.0.0-5030320261023001",
+    "@dcloudio/vite-plugin-uni": "3.0.0-5030320261023001",
+    "sass": "1.106.1",
+    "vite": "^7.3.7"
+  },
+  "overrides": {
+    "vue": "3.5.44",
+    "@vue/server-renderer": "3.5.44",
+    "ws": "8.22.0",
+    "yaml": "1.10.3",
+    "postcss": "8.5.31",
+    "source-map-js": "1.2.2"
+  }
+}

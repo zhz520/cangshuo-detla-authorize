@@ -1,0 +1,269 @@
+/* Shared geometry for the user, player and customer-service web pages. */
+/* #ifdef H5 */
+:root {
+  color-scheme: light;
+  --app-content-width: 100%;
+  --app-content-left: 0px;
+  --app-viewport-height: 100vh;
+  --app-visible-height: 100vh;
+  --app-viewport-top: 0px;
+  --app-viewport-bottom: 0px;
+  --app-safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+@supports (height: 100dvh) {
+  :root {
+    --app-viewport-height: 100dvh;
+    --app-visible-height: 100dvh;
+  }
+}
+
+html[data-keyboard-open='true'] {
+  --app-safe-bottom: 0px;
+}
+
+html, body {
+  min-width: 0;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  background: #eceef1;
+}
+
+#app, uni-app {
+  width: 100%;
+  max-width: 540px;
+  margin: 0 auto;
+  min-height: var(--app-viewport-height);
+}
+
+uni-page {
+  --app-page-height: calc(var(--app-viewport-height) - var(--window-top, 44px));
+  --app-visible-page-height: calc(var(--app-visible-height) - var(--window-top, 44px));
+  min-width: 0;
+}
+
+uni-page-body {
+  min-height: var(--app-page-height);
+  overflow-wrap: break-word;
+  color: #17191c;
+  background: #f7f8f9;
+  padding-left: max(0px, calc(env(safe-area-inset-left, 0px) - var(--app-content-left)));
+  padding-right: max(0px, calc(env(safe-area-inset-right, 0px) - var(--app-content-left)));
+}
+
+/* H5 otherwise renders uni-app's native tab bar below our role-specific tab bar. */
+#app uni-tabbar {
+  display: none !important;
+}
+
+#app uni-page-wrapper {
+  height: var(--app-page-height) !important;
+}
+
+#app uni-page {
+  position: relative;
+}
+
+#app uni-page-refresh {
+  left: 0;
+  right: 0;
+  width: 100%;
+  max-width: 100%;
+}
+
+#app uni-page-wrapper::after {
+  display: none;
+}
+
+uni-page-head .uni-page-head {
+  left: var(--app-content-left) !important;
+  right: var(--app-content-left) !important;
+}
+
+uni-scroll-view, uni-swiper, uni-input, uni-textarea {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.uni-scroll-view {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+}
+
+input, textarea, .uni-input-input, .uni-textarea-textarea {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* iOS zooms focused controls smaller than 16px, displacing fixed action bars. */
+@supports (-webkit-touch-callout: none) {
+  .uni-input-input, .uni-textarea-textarea {
+    font-size: max(16px, 1em);
+  }
+}
+
+/* Fixed UI must use the same column as the page, including on desktop. */
+#app uni-page-body .custom-tabbar,
+#app uni-page-body .bottom-bar,
+#app uni-page-body .bottom-area,
+#app uni-page-body .profile-actions,
+#app uni-page-body .bg-layer,
+#app uni-page-body .gold-dust-canvas {
+  left: var(--app-content-left) !important;
+  right: var(--app-content-left) !important;
+  width: auto;
+}
+
+#app uni-page-body .custom-tabbar {
+  padding-bottom: var(--app-safe-bottom) !important;
+}
+
+#app uni-page-body .bottom-bar,
+#app uni-page-body .bottom-area,
+#app uni-page-body .profile-actions {
+  bottom: var(--app-viewport-bottom);
+}
+
+#app uni-page-body .cs-float-btn {
+  right: calc(var(--app-content-left) + 24rpx);
+  bottom: calc(150rpx + var(--app-safe-bottom));
+}
+
+/* Mask bodies remain reachable in landscape and while a keyboard is open. */
+#app uni-page-body .mask,
+#app uni-page-body .modal-mask,
+#app uni-page-body .picker-mask,
+#app uni-page-body .notice-popup,
+#app uni-page-body .notice-list-mask,
+#app uni-page-body .grab-mask,
+#app uni-page-body .reward-mask {
+  left: var(--app-content-left) !important;
+  right: var(--app-content-left) !important;
+  top: var(--app-viewport-top);
+  bottom: var(--app-viewport-bottom);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+#app uni-page-body .modal-body,
+#app uni-page-body .modal-content,
+#app uni-page-body .modal-box,
+#app uni-page-body .dialog,
+#app uni-page-body .grab-dialog,
+#app uni-page-body .reward-dialog,
+#app uni-page-body .popup-content {
+  flex-shrink: 0;
+  max-width: calc(100% - 32rpx);
+  max-height: calc(var(--app-visible-height) - 32rpx - var(--app-safe-bottom));
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+#app uni-page-body .picker-panel,
+#app uni-page-body .picker-popup,
+#app uni-page-body .notice-list-popup {
+  max-height: calc(var(--app-visible-height) - 24rpx);
+  padding-bottom: var(--app-safe-bottom);
+}
+
+/* Lists with dynamic filters cannot reserve their height using hard-coded rpx. */
+#app uni-page-body .hall-page,
+#app uni-page-body .player-order-list,
+#app uni-page-body .cs-order-list,
+#app uni-page-body .directory-page {
+  display: flex;
+  flex-direction: column;
+  height: var(--app-page-height);
+  min-height: 0;
+}
+
+#app uni-page-body .hall-page > .filter-bar,
+#app uni-page-body .player-order-list > .tabs,
+#app uni-page-body .cs-order-list > .search-bar,
+#app uni-page-body .cs-order-list > .filter-bar,
+#app uni-page-body .directory-page > .search-bar,
+#app uni-page-body .directory-page > .category-tabs {
+  flex-shrink: 0;
+}
+
+#app uni-page-body .hall-page > .list,
+#app uni-page-body .player-order-list > .list,
+#app uni-page-body .cs-order-list > .list,
+#app uni-page-body .directory-page > .directory-scroll {
+  flex: 1;
+  height: 0;
+  min-height: 0;
+  margin-bottom: calc(110rpx + var(--app-safe-bottom));
+}
+
+#app uni-page-body .login-page {
+  padding: 48rpx 44rpx calc(48rpx + var(--app-safe-bottom));
+}
+
+#app .login-page .logo-area, #app .login-page .tab-bar, #app .login-page .login-area {
+  flex-shrink: 0;
+}
+
+#app uni-page-body .agreement .agree-row {
+  flex-wrap: wrap;
+  justify-content: center;
+  line-height: 1.8;
+}
+
+#app uni-page-body .agreement .checkbox {
+  flex-shrink: 0;
+}
+
+#app uni-page-body .info-row .value,
+#app uni-page-body .form-row input,
+#app uni-page-body .card-info,
+#app uni-page-body .product-info {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+#app uni-page-body .create-order .bottom-bar {
+  height: calc(100rpx + var(--app-safe-bottom));
+  padding-bottom: var(--app-safe-bottom);
+}
+
+#app uni-page-body .product-detail,
+#app uni-page-body .create-order,
+#app uni-page-body .recharge-page {
+  padding-bottom: calc(220rpx + var(--app-safe-bottom));
+}
+
+uni-rich-text img, .rich-text img {
+  max-width: 100%;
+  height: auto;
+}
+
+@media (max-height: 600px) {
+  #app uni-page-body .login-page {
+    justify-content: flex-start;
+    padding-top: 28rpx;
+  }
+
+  #app uni-page-body .login-page .logo-area {
+    margin-bottom: 24rpx;
+  }
+
+  #app uni-page-body .login-page .logo-area .logo {
+    width: 100rpx;
+    height: 100rpx;
+    margin-bottom: 12rpx;
+  }
+
+  #app uni-page-body .login-page .tab-bar {
+    margin-bottom: 24rpx;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+/* #endif */

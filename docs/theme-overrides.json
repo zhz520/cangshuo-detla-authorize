@@ -1,0 +1,8 @@
+[
+  {
+    "path": "delta-admin-ui/src/components/ImageUpload.vue",
+    "original_sha256": "a460843106d24ed05fffc07d4c1a2d782b4c0e5c24ead97f5e367dc4df344671",
+    "sha256": "ea4b80aaf59e9063b12ad99e73244f5199833515a9f11b2c6a92b73c691fdb20",
+    "reason": "2026-11-01 用户要求商品、分类等后台图片支持多比例：预览按原比例缩放，展示完整图片、尺寸和比例。"
+  }
+]

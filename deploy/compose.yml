@@ -1,0 +1,76 @@
+name: client742
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_DATABASE: client742_game
+      MYSQL_USER: client742
+      MYSQL_PASSWORD: ${DB_PASSWORD:?Run Initialize-Environment.ps1 first}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Run Initialize-Environment.ps1 first}
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_general_ci"]
+    ports: ["127.0.0.1:17423:3306"]
+    volumes:
+      - ../runtime/mysql:/var/lib/mysql
+      - ../database/01-schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ../database/02-defaults.sql:/docker-entrypoint-initdb.d/02-defaults.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQL_ROOT_PASSWORD mysqladmin ping -h 127.0.0.1 -uroot --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+  redis:
+    image: redis:7-alpine
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Run Initialize-Environment.ps1 first}
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\" --notify-keyspace-events Ex"]
+    ports: ["127.0.0.1:17424:6379"]
+    volumes: ["../runtime/redis:/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=$$REDIS_PASSWORD redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+  backend:
+    build: ../delta-game
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      SERVER_PORT: 8080
+      DB_URL: jdbc:mysql://mysql:3306/client742_game?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai
+      DB_USERNAME: client742
+      DB_PASSWORD: ${DB_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DATABASE: 7
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      AES_KEY: ${AES_KEY}
+      JWT_SECRET: ${JWT_SECRET}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://127.0.0.1:17420,http://127.0.0.1:17421}
+      FILE_UPLOAD_PATH: /app/uploads/
+      PLATFORM_CUSTOMER_ID: ${PLATFORM_CUSTOMER_ID:-742}
+      PLATFORM_STATE_PATH: /app/platform/state.json
+      PLATFORM_PUBLIC_KEY_PATH: ${PLATFORM_PUBLIC_KEY_PATH:-}
+      JAVA_TOOL_OPTIONS: -Djava.io.tmpdir=/app/tmp
+      BOOTSTRAP_ADMIN_ENABLED: ${BOOTSTRAP_ADMIN_ENABLED:-false}
+      BOOTSTRAP_ADMIN_USERNAME: ${BOOTSTRAP_ADMIN_USERNAME:-admin}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+      WX_MINIAPP_ENABLED: ${WX_MINIAPP_ENABLED:-false}
+      WX_PAY_ENABLED: ${WX_PAY_ENABLED:-false}
+      WX_MINIAPP_APPID: ${WX_MINIAPP_APPID:-}
+      WX_MINIAPP_SECRET: ${WX_MINIAPP_SECRET:-}
+    ports: ["127.0.0.1:17422:8080"]
+    volumes:
+      - ../runtime/uploads:/app/uploads
+      - ../runtime/logs:/app/logs
+      - ../runtime/tmp:/app/tmp
+      - ../runtime/platform:/app/platform
+    depends_on:
+      mysql: { condition: service_healthy }
+      redis: { condition: service_healthy }
+  admin:
+    build: ../delta-admin-ui
+    ports: ["127.0.0.1:17420:80"]
+    depends_on: [backend]
+  h5:
+    build: ../delta-mp
+    ports: ["127.0.0.1:17421:80"]
+    depends_on: [backend]

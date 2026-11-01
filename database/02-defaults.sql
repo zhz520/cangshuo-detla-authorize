@@ -1,0 +1,21 @@
+-- Clean technical defaults; configure pricing and client identity before launch.
+SET NAMES utf8mb4;
+INSERT INTO sys_config (config_key,config_name,config_value,value_type,config_group) VALUES ('site_name','平台名称','斜阳电竞','text','站点配置') ON DUPLICATE KEY UPDATE config_key=VALUES(config_key);
+INSERT INTO sys_config (config_key,config_name,config_value,value_type,config_group) VALUES ('site_subtitle','平台副标题','专业游戏平台','text','站点配置') ON DUPLICATE KEY UPDATE config_key=VALUES(config_key);
+INSERT INTO sys_config (config_key,config_name,config_value,value_type,config_group) VALUES ('site_logo','平台 Logo','','image','站点配置') ON DUPLICATE KEY UPDATE config_key=VALUES(config_key);
+INSERT INTO sys_config (config_key,config_name,config_value,value_type,config_group) VALUES ('site_admin_title','管理后台标题','斜阳电竞管理后台','text','站点配置') ON DUPLICATE KEY UPDATE config_key=VALUES(config_key);
+INSERT INTO sys_config (config_key,config_name,config_value,value_type,config_group) VALUES ('site.tech_support_text','技术支持文字','斜阳电竞提供技术支持','text','站点配置') ON DUPLICATE KEY UPDATE config_key=VALUES(config_key);
+INSERT INTO sys_config (config_key,config_name,config_value,value_type,config_group) VALUES ('site.tech_support_url','技术支持链接','','text','站点配置') ON DUPLICATE KEY UPDATE config_key=VALUES(config_key);
+INSERT INTO sys_config (config_key,config_name,config_value,value_type,config_group) VALUES ('settlement.commission_rate','平台抽佣比例','0.1','number','结算配置') ON DUPLICATE KEY UPDATE config_key=VALUES(config_key);
+INSERT INTO sys_config (config_key,config_name,config_value,value_type,config_group) VALUES ('player.deposit_required','打手押金开关','true','boolean','打手配置') ON DUPLICATE KEY UPDATE config_key=VALUES(config_key);
+INSERT INTO sys_config (config_key,config_name,config_value,value_type,config_group) VALUES ('player.deposit_amount','打手押金金额','100','number','打手配置') ON DUPLICATE KEY UPDATE config_key=VALUES(config_key);
+INSERT INTO sys_config (config_key,config_name,config_value,value_type,config_group) VALUES ('wx.pay.enabled','启用微信支付','false','boolean','微信支付配置') ON DUPLICATE KEY UPDATE config_key=VALUES(config_key);
+INSERT INTO sys_config (config_key,config_name,config_value,value_type,config_group) VALUES ('sms.aliyun.enabled','启用短信提醒','false','boolean','短信配置') ON DUPLICATE KEY UPDATE config_key=VALUES(config_key);
+INSERT INTO sys_config (config_key,config_name,config_value,value_type,config_group) VALUES ('sms.aliyun.otp_enabled','启用短信验证码','false','boolean','短信配置') ON DUPLICATE KEY UPDATE config_key=VALUES(config_key);
+INSERT INTO sys_config (config_key,config_name,config_value,value_type,config_group) VALUES ('notice.popup_every_visit','公告每次刷新弹窗','true','boolean','公告配置') ON DUPLICATE KEY UPDATE config_key=VALUES(config_key);
+INSERT INTO sys_config (config_key,config_name,config_value,value_type,config_group) VALUES ('withdraw.min_amount','最低提现金额','20','number','提现配置') ON DUPLICATE KEY UPDATE config_key=VALUES(config_key);
+INSERT INTO sys_config (config_key,config_name,config_value,value_type,config_group) VALUES ('withdraw.max_daily_count','每日提现次数上限','1','number','提现配置') ON DUPLICATE KEY UPDATE config_key=VALUES(config_key);
+INSERT INTO sys_config (config_key,config_name,config_value,value_type,config_group) VALUES ('order.auto_confirm_hours','自动确认收货时间','48','number','订单配置') ON DUPLICATE KEY UPDATE config_key=VALUES(config_key);
+INSERT INTO sys_config (config_key,config_name,config_value,value_type,config_group) VALUES ('order.pay_deadline_minutes','支付超时时间','15','number','订单配置') ON DUPLICATE KEY UPDATE config_key=VALUES(config_key);
+INSERT INTO sys_config (config_key,config_name,config_value,value_type,config_group) VALUES ('order.max_active_per_player','打手最大接单数','1','number','订单配置') ON DUPLICATE KEY UPDATE config_key=VALUES(config_key);
+INSERT INTO sys_config (config_key,config_name,config_value,value_type,config_group) VALUES ('wx.pay.h5-app-name','H5 应用名称','斜阳电竞服务','text','微信支付配置') ON DUPLICATE KEY UPDATE config_key=VALUES(config_key);

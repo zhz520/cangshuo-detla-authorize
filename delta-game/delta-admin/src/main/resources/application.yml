@@ -1,0 +1,15 @@
+spring:
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:dev}
+
+app:
+  allowed-origins: ${ALLOWED_ORIGINS:http://127.0.0.1:17420,http://127.0.0.1:17421}
+  bootstrap-admin:
+    enabled: ${BOOTSTRAP_ADMIN_ENABLED:false}
+    username: ${BOOTSTRAP_ADMIN_USERNAME:admin}
+    password: ${BOOTSTRAP_ADMIN_PASSWORD:}
+
+platform:
+  customer-id: ${PLATFORM_CUSTOMER_ID:742}
+  state-path: ${PLATFORM_STATE_PATH:./.local/platform/state.json}
+  public-key-path: ${PLATFORM_PUBLIC_KEY_PATH:}

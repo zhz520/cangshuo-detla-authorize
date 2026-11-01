@@ -1,0 +1,75 @@
+/* ==================== 主题色 ==================== */
+$primary-color: #17191c;
+$primary-light: #51565e;
+$primary-dark: #17191c;
+$success-color: #347a5b;
+$warning-color: #996b30;
+$danger-color: #c94f59;
+$info-color: #73777e;
+
+/* ==================== 渐变 ==================== */
+$gradient-primary: linear-gradient(135deg, #17191c, #30343a);
+$gradient-accent: linear-gradient(135deg, #17191c, #454a52);
+$gradient-cool: linear-gradient(135deg, #17191c, #555b63);
+$gradient-hero: linear-gradient(135deg, #17191c, #17191c);
+
+/* ==================== 文字色 ==================== */
+$text-color: #17191c;
+$text-color-secondary: #666b73;
+$text-color-placeholder: #73777e;
+$text-color-disabled: #b9bdc4;
+
+/* ==================== 背景色 ==================== */
+$bg-color: #ffffff;
+$bg-color-page: #f4f5f6;
+$bg-color-hover: rgba(23, 25, 28, 0.04);
+$bg-color-mask: rgba(23, 25, 28, 0.6);
+
+/* ==================== 强调色 ==================== */
+$accent: #17191c;
+$accent-light: #454a52;
+$accent-dark: #17191c;
+
+/* ==================== 卡片 ==================== */
+$card-bg: #ffffff;
+$card-bg-solid: #ffffff;
+
+/* ==================== 边框 ==================== */
+$border-color: #e6e7e9;
+$border-color-light: #f4f5f6;
+$border-radius-sm: 8rpx;
+$border-radius: 16rpx;
+$border-radius-lg: 24rpx;
+$border-radius-round: 999rpx;
+
+/* ==================== 字号 ==================== */
+$font-size-xs: 20rpx;
+$font-size-sm: 24rpx;
+$font-size-base: 28rpx;
+$font-size-md: 30rpx;
+$font-size-lg: 32rpx;
+$font-size-xl: 36rpx;
+$font-size-xxl: 40rpx;
+
+/* ==================== 间距 ==================== */
+$spacing-xs: 8rpx;
+$spacing-sm: 16rpx;
+$spacing-base: 24rpx;
+$spacing-md: 32rpx;
+$spacing-lg: 40rpx;
+$spacing-xl: 48rpx;
+
+/* ==================== 订单状态颜色 ==================== */
+$status-pending-pay: #996b30;
+$status-paid: #17191c;
+$status-assigned: #51565e;
+$status-accepted: #17191c;
+$status-in-progress: #555b63;
+$status-completed: #347a5b;
+$status-confirmed: #347a5b;
+$status-cancelled: #73777e;
+$status-refunded: #c94f59;
+$status-dispute: #c94f59;
+
+/* ==================== tabBar高度 ==================== */
+$tabbar-height: 110rpx;

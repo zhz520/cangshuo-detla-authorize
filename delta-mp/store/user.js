@@ -1,0 +1,108 @@
+import { defineStore } from 'pinia'
+import { ref, computed } from 'vue'
+import { getUserToken, setUserToken, removeUserToken, removePlayerToken } from '@/utils/auth'
+import { userLogin, h5Login, setupUserPassword, userPasswordLogin } from '@/api/auth'
+import { getUserProfile } from '@/api/user'
+import { useChatStore } from '@/store/chat'
+
+export const useUserStore = defineStore('user', () => {
+  const token = ref(getUserToken())
+  const userInfo = ref(null)
+
+  const isLoggedIn = computed(() => !!token.value)
+  const nickname = computed(() => userInfo.value?.nickname || '未登录')
+  const avatar = computed(() => userInfo.value?.avatar || '')
+  const phone = computed(() => userInfo.value?.phone || '')
+
+  /** 微信登录 */
+  async function login(phoneCode = '') {
+    try {
+      const loginRes = await uni.login({ provider: 'weixin' })
+      const { data } = await userLogin(loginRes.code, phoneCode)
+      applyLoginResult(data)
+      return { success: true, code: 200, data }
+    } catch (e) {
+      return {
+        success: false,
+        code: e?.code || 500,
+        msg: e?.msg || e?.message || '登录失败'
+      }
+    }
+  }
+
+  /** H5 手机号验证码登录 */
+  async function loginByPhone(phone, code, requestId) {
+    try {
+      const { data } = await h5Login({ phone, code, requestId })
+      if(data.passwordSetupRequired) {token.value='';userInfo.value=null;removeUserToken();removePlayerToken();useChatStore().disconnect();return { success:false, passwordSetupRequired:true, data }}
+      applyLoginResult(data)
+      return { success: true, code: 200, data }
+    } catch (e) {
+      return {
+        success: false,
+        code: e?.code || 500,
+        msg: e?.msg || e?.message || '登录失败'
+      }
+    }
+  }
+
+  function applyLoginResult(data) {
+    if(!data?.token) throw new Error('登录凭据无效')
+    token.value = data.token
+    setUserToken(data.token)
+    userInfo.value = data
+    const chatStore = useChatStore()
+    chatStore.fetchMessageUnreadCount()
+  }
+  async function completePasswordSetup(data) {
+    const response=await setupUserPassword(data);applyLoginResult(response.data);return response.data
+  }
+  async function loginWithPassword(data) {
+    const response=await userPasswordLogin(data);applyLoginResult(response.data);return response.data
+  }
+
+  /** 获取用户资料 */
+  async function fetchProfile(silent = false) {
+    if (!token.value) return
+    try {
+      const { data } = await getUserProfile(silent ? { loading: false } : {})
+      userInfo.value = data
+    } catch (e) {
+      // token失效时已由request拦截器处理
+    }
+  }
+
+  /** 退出登录 */
+  function logout() {
+    token.value = ''
+    userInfo.value = null
+    removeUserToken()
+    removePlayerToken()
+    uni.reLaunch({ url: '/pages/login/index' })
+  }
+
+  /** 检查登录态，未登录则跳登录页 */
+  function checkLogin() {
+    if (!token.value) {
+      uni.navigateTo({ url: '/pages/login/index' })
+      return false
+    }
+    return true
+  }
+
+  return {
+    token,
+    userInfo,
+    isLoggedIn,
+    nickname,
+    avatar,
+    phone,
+    login,
+    loginByPhone,
+    completePasswordSetup,
+    loginWithPassword,
+    fetchProfile,
+    logout,
+    checkLogin
+  }
+})

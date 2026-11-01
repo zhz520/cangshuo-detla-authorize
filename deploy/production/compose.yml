@@ -1,0 +1,127 @@
+name: jiangaoshan-742
+
+services:
+  mysql:
+    image: mysql:8.0
+    pull_policy: never
+    container_name: jiangaoshan-742-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: client742_game
+      MYSQL_USER: client742
+      MYSQL_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_general_ci
+      - --performance-schema=OFF
+      - --innodb-buffer-pool-size=256M
+      - --max-connections=150
+    volumes:
+      - ../../runtime/mysql:/var/lib/mysql
+      - ../../database/01-schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ../../database/02-defaults.sql:/docker-entrypoint-initdb.d/02-defaults.sql:ro
+    mem_limit: 768m
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQL_ROOT_PASSWORD mysqladmin ping -h 127.0.0.1 -uroot --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    pull_policy: never
+    container_name: jiangaoshan-742-redis
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\" --notify-keyspace-events Ex"]
+    volumes:
+      - ../../runtime/redis:/data
+    mem_limit: 192m
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=$$REDIS_PASSWORD redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  backend:
+    build:
+      context: ../..
+      dockerfile: deploy/production/backend.Dockerfile
+    image: jiangaoshan-742-backend:1.0.0
+    container_name: jiangaoshan-742-backend
+    restart: unless-stopped
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      SERVER_PORT: 8080
+      DB_URL: jdbc:mysql://mysql:3306/client742_game?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai
+      DB_USERNAME: client742
+      DB_PASSWORD: ${DB_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DATABASE: 7
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      AES_KEY: ${AES_KEY}
+      JWT_SECRET: ${JWT_SECRET}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+      FILE_UPLOAD_PATH: /app/uploads/
+      FILE_UPLOAD_URL_PREFIX: /file/
+      PLATFORM_CUSTOMER_ID: ${PLATFORM_CUSTOMER_ID:-742}
+      PLATFORM_STATE_PATH: /app/platform/state.json
+      PLATFORM_PUBLIC_KEY_PATH: ${PLATFORM_PUBLIC_KEY_PATH:-}
+      JAVA_TOOL_OPTIONS: -Djava.io.tmpdir=/app/tmp
+      BOOTSTRAP_ADMIN_ENABLED: ${BOOTSTRAP_ADMIN_ENABLED:-true}
+      BOOTSTRAP_ADMIN_USERNAME: ${BOOTSTRAP_ADMIN_USERNAME:-admin}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:?BOOTSTRAP_ADMIN_PASSWORD is required}
+      WX_MINIAPP_ENABLED: ${WX_MINIAPP_ENABLED:-false}
+      WX_PAY_ENABLED: ${WX_PAY_ENABLED:-false}
+      TZ: Asia/Shanghai
+    volumes:
+      - ../../runtime/uploads:/app/uploads
+      - ../../runtime/logs:/app/logs
+      - ../../runtime/tmp:/app/tmp
+      - ../../runtime/platform:/app/platform
+    mem_limit: 1100m
+    stop_grace_period: 30s
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080'"]
+      interval: 15s
+      timeout: 5s
+      retries: 30
+      start_period: 40s
+
+  admin:
+    build:
+      context: ../..
+      dockerfile: deploy/production/admin.Dockerfile
+    image: jiangaoshan-742-admin:1.0.0
+    container_name: jiangaoshan-742-admin
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:7420:80"
+    mem_limit: 96m
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  h5:
+    build:
+      context: ../..
+      dockerfile: deploy/production/h5.Dockerfile
+    image: jiangaoshan-742-h5:1.0.0
+    container_name: jiangaoshan-742-h5
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:7421:80"
+    mem_limit: 96m
+    depends_on:
+      backend:
+        condition: service_healthy
+

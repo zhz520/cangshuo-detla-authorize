@@ -1,0 +1,9 @@
+**/node_modules
+**/logs
+**/src/test
+**/.env*
+**/*.pem
+**/*.key
+**/*.log
+**/target/*
+!delta-admin/target/delta-admin.jar

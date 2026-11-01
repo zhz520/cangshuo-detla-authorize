@@ -1,0 +1,16 @@
+{
+  "name": "client742-game",
+  "private": true,
+  "version": "1.0.0",
+  "description": "detla 独立客户副本，保留原主题，使用全新数据",
+  "scripts": {
+    "dev:admin": "npm --prefix delta-admin-ui run dev",
+    "dev:h5": "npm --prefix delta-mp run dev:h5",
+    "build:admin": "npm --prefix delta-admin-ui run build",
+    "build:h5": "npm --prefix delta-mp run build:h5",
+    "build:mp-weixin": "npm --prefix delta-mp run build:mp-weixin",
+    "verify:isolation": "node scripts/verify-isolation.mjs",
+    "test:licensing": "node --test scripts/license-authority.test.mjs",
+    "audit:platform": "node scripts/audit-platform-baseline.mjs"
+  }
+}
