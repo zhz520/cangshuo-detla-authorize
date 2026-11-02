@@ -112,6 +112,7 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
         if ((match=route.match(/^\/api\/products\/([\w-]+)\/releases\/([^/]+)\/items$/)) && method==='PUT') return json(store.releaseService.configureItems(match[1],decodeURIComponent(match[2]),body,session.username))
         if ((match = route.match(/^\/api\/instances\/([a-f\d-]+)$/)) && method === 'PUT') return json(store.updateInstance(match[1], body, session.username))
         if ((match = route.match(/^\/api\/modules\/([\w-]+)$/)) && method === 'PUT') return json(store.updateModule(match[1], body, session.username))
+        if ((match = route.match(/^\/api\/modules\/([\w-]+)$/)) && method === 'DELETE') return json(store.deleteModule(match[1], session.username))
         if ((match = route.match(/^\/api\/orders\/([a-f\d-]+)\/paid$/)) && method === 'POST') return json(store.markPaid(match[1], body, session.username))
         if ((match = route.match(/^\/api\/orders\/([a-f\d-]+)\/maintenance$/)) && method === 'POST') return json(store.grantMaintenance(match[1], body, session.username))
         if ((match = route.match(/^\/api\/orders\/([a-f\d-]+)\/issue$/)) && method === 'POST') return json(store.issue(match[1], session.username))

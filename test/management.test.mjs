@@ -120,6 +120,19 @@ test('project deposit, balance and collection notes are administrator-only comme
   store.management.saveProject(project,{name:'项目A',maintenanceUntil:'2029-01-01T00:00:00Z',depositAmountCents:null,balanceAmountCents:null,contractNote:''},'owner');row=store.lists().projects[0];assert.equal(row.deposit_amount_cents,null);assert.equal(row.contract_total_cents,null)
  }finally{f.close()}
 })
+test('official WeChat notifications are a priced catalog module and module CRUD is guarded by commercial history',()=>{
+ const f=setup(),{store,instance}=f;try{
+  const item=store.lists().modules.find(row=>row.id==='official_wechat_notifications')
+  assert.equal(item.price_cents,10000);assert.equal(item.status,'ACTIVE');assert.equal(item.product_id,'detla')
+  store.management.saveModule({id:'temporary_feature',productId:'detla',name:'临时功能',description:'增删改查',minVersion:'1.3.5',priceCents:5000,termDays:365,status:'ACTIVE'},'owner')
+  store.updateModule('temporary_feature',{name:'临时功能修改',priceCents:6000,status:'DRAFT'},'owner')
+  let row=store.lists().modules.find(item=>item.id==='temporary_feature');assert.equal(row.price_cents,6000);assert.equal(row.name,'临时功能修改')
+  store.deleteModule('temporary_feature','owner');assert(!store.lists().modules.some(item=>item.id==='temporary_feature'))
+  store.db.prepare("UPDATE instances SET client_version='1.3.5' WHERE id=?").run(instance)
+  const order=store.createOrder({instanceId:instance,moduleId:'official_wechat_notifications'},'owner');store.markPaid(order.id,{reference:'official-wechat-test'},'owner');store.issue(order.id,'owner')
+  assert.throws(()=>store.deleteModule('official_wechat_notifications','owner'),/订单或授权/)
+ }finally{f.close()}
+})
 test('software registration does not require GitHub while version checks remain optional',async()=>{
  const f=setup(),{store}=f;try{
   store.management.saveProduct(null,{id:'local-tool',name:'本地业务系统',kind:'WEB',repository:''},'owner')

@@ -53,6 +53,7 @@ export class Management {
     }
     store.transaction(() => {
       this.db.prepare('INSERT OR IGNORE INTO products(id,name,kind,repository,created_at) VALUES (?,?,?,?,?)').run(DEFAULT_PRODUCT,'电竞业务系统','WEB','zhz520/cangshuo-detla',stamp())
+      this.db.prepare("INSERT OR IGNORE INTO modules(id,name,description,price_cents,term_days,status,min_version,product_id) VALUES (?,?,?,?,?,?,?,?)").run('official_wechat_notifications','公众号模板通知','公众号账号绑定及新订单、接单、订单完成、素材审核和提现审核模板通知。',10000,365,'ACTIVE','1.3.5',DEFAULT_PRODUCT)
       for (const instance of this.db.prepare('SELECT * FROM instances WHERE project_id IS NULL').all()) {
         const projectId = randomUUID()
         this.db.prepare('INSERT INTO projects(id,customer_id,product_id,name,maintenance_until,created_at) VALUES (?,?,?,?,?,?)').run(projectId,instance.customer_id,DEFAULT_PRODUCT,instance.name,instance.maintenance_until,stamp())
@@ -176,8 +177,13 @@ export class Management {
   saveModule(body,actor) {
     const id=identifier(body.id,'模块编号'),productId=identifier(body.productId,'软件编号'),name=text(body.name,'模块名称',80),description=text(body.description,'模块说明',1000)
     const minVersion=text(body.minVersion,'最低客户端版本',80);compareVersions(minVersion,minVersion)
-    this.db.prepare("INSERT INTO modules(id,name,description,price_cents,term_days,status,min_version,product_id) VALUES (?,?,?,NULL,365,'DRAFT',?,?)").run(id,name,description,minVersion,productId)
-    this.store.audit(actor,'CREATE_MODULE',id,{productId});return {id}
+    if(!this.db.prepare('SELECT id FROM products WHERE id=?').get(productId))fail('软件不存在',404)
+    const priceCents=body.priceCents==null?null:integer(body.priceCents,'价格（分）',0,100000000)
+    const termDays=body.termDays==null?365:integer(body.termDays,'授权天数',0,3660)
+    const status=body.status||'DRAFT'
+    if(!['DRAFT','ACTIVE'].includes(status)||(status==='ACTIVE'&&priceCents==null))fail('模块上架前必须配置价格')
+    this.db.prepare("INSERT INTO modules(id,name,description,price_cents,term_days,status,min_version,product_id) VALUES (?,?,?,?,?,?,?,?)").run(id,name,description,priceCents,termDays,status,minVersion,productId)
+    this.store.audit(actor,'CREATE_MODULE',id,{productId,priceCents,termDays,status});return {id}
   }
   clientUpdates(productId, version, publicBase = '') {
     compareVersions(version,version)

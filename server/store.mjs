@@ -210,11 +210,23 @@ export class AuthorityStore {
     })
   }
   updateModule(id, body, actor) {
-    if (!this.db.prepare('SELECT id FROM modules WHERE id=?').get(id)) fail('模块不存在', 404)
-    const price = body.priceCents == null ? null : integer(body.priceCents, '价格（分）')
-    const days = integer(body.termDays, '授权天数', 0, 3660), status = body.status
+    const existing=this.db.prepare('SELECT * FROM modules WHERE id=?').get(id)
+    if (!existing) fail('模块不存在', 404)
+    const name=text(body.name??existing.name,'模块名称',80),description=text(body.description??existing.description,'模块说明',1000)
+    const minVersion=text(body.minVersion??existing.min_version,'最低客户端版本',80);compareVersions(minVersion,minVersion)
+    const productId=body.productId==null?existing.product_id:identifier(body.productId,'软件编号')
+    if(!this.db.prepare('SELECT id FROM products WHERE id=?').get(productId))fail('软件不存在',404)
+    const price = body.priceCents === undefined ? existing.price_cents : body.priceCents == null ? null : integer(body.priceCents, '价格（分）')
+    const days = body.termDays==null?existing.term_days:integer(body.termDays, '授权天数', 0, 3660), status = body.status??existing.status
     if (!['DRAFT', 'ACTIVE'].includes(status) || (status === 'ACTIVE' && price == null)) fail('模块上架前必须配置价格')
-    return this.transaction(() => { this.db.prepare('UPDATE modules SET price_cents=?,term_days=?,status=? WHERE id=?').run(price, days, status, id); this.audit(actor, 'UPDATE_MODULE', id, { priceCents: price, termDays: days, status }); return { id } })
+    return this.transaction(() => { this.db.prepare('UPDATE modules SET name=?,description=?,price_cents=?,term_days=?,status=?,min_version=?,product_id=? WHERE id=?').run(name,description,price,days,status,minVersion,productId,id); this.audit(actor, 'UPDATE_MODULE', id, { productId,name,priceCents: price, termDays: days, status,minVersion }); return { id } })
+  }
+  deleteModule(id,actor) {
+    if(!this.db.prepare('SELECT id FROM modules WHERE id=?').get(id))fail('模块不存在',404)
+    const orders=this.db.prepare('SELECT COUNT(*) AS count FROM orders WHERE module_id=?').get(id).count
+    const grants=this.db.prepare('SELECT COUNT(*) AS count FROM entitlements WHERE module_id=?').get(id).count
+    if(orders||grants)fail('该模块已有订单或授权记录，不能删除；请改为草稿停用',409)
+    return this.transaction(()=>{this.db.prepare('DELETE FROM modules WHERE id=?').run(id);this.audit(actor,'DELETE_MODULE',id);return {id}})
   }
   createOrder(body, actor) {
     const instanceId = text(body.instanceId, '实例编号', 36), moduleId = identifier(body.moduleId, '模块编号')

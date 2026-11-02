@@ -26,6 +26,10 @@ test('operations HTTP routes support a complete isolated customer/project/licens
   await call('/api/client/report','POST',{license:identity,version:'1.2.0'})
   await call('/api/modules','POST',{id:'http_module',productId:'other',name:'测试功能',description:'接口测试',minVersion:'1.2.0'},201)
   await call('/api/modules/http_module','PUT',{priceCents:100,termDays:365,status:'ACTIVE'})
+  await call('/api/modules','POST',{id:'module_crud',productId:'other',name:'增删改查测试',description:'新增',minVersion:'1.2.0',priceCents:10000,status:'ACTIVE'},201)
+  await call('/api/modules/module_crud','PUT',{name:'增删改查测试已修改',description:'修改后',minVersion:'1.3.0',priceCents:20000,status:'DRAFT'})
+  await call('/api/modules/module_crud','DELETE')
+  assert(!store.lists().modules.some(row=>row.id==='module_crud'))
   const order=(await call('/api/orders','POST',{instanceId:id,moduleId:'http_module'},201)).result
   await call('/api/orders/'+order.id+'/paid','POST',{reference:'isolated-test'})
   const license=(await call('/api/orders/'+order.id+'/issue','POST',{})).result
