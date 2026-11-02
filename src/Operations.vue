@@ -19,6 +19,8 @@
       <div class="ops-toolbar payment-heading"><div><h3>系统支付通道</h3><p class="muted">在系统级维护商户参数。配置并启用后，到“项目管理”为每个项目选择默认接入和支付方式。</p></div><el-tag :type="data.paymentProviders.some(item=>item.enabled)?'success':'info'">{{ data.paymentProviders.some(item=>item.enabled)?'已有可用支付通道':'尚未启用支付通道' }}</el-tag></div>
       <el-card v-for="provider in data.paymentProviders" :key="provider.id" shadow="never" class="payment-card">
         <template #header><div class="payment-card-title"><div><strong>{{ provider.name }}</strong><p>{{ provider.description }}</p></div><el-switch v-model="paymentForms[provider.id].enabled" active-text="系统启用" inactive-text="停用"/></div></template>
+        <el-alert v-if="provider.id==='wechat_pay'" title="公众号支付需单独配置" type="info" :closable="false"
+          description="公众号支付（OFFICIAL）用于微信内置浏览器，必须填写独立公众号 AppID、AppSecret 和不含路径的 HTTPS 站点 Origin；小程序支付继续使用 JSAPI。两者 OpenID 不能混用。" />
         <el-alert v-if="paymentForms[provider.id]?.enabled" title="启用后，项目可把此通道设为默认支付接入。项目参数不会复制商户密钥；实例同步只获得通道名称和支付方式。" type="success" :closable="false"/>
         <el-form label-position="top" class="payment-form" :disabled="saving">
           <el-form-item v-for="field in provider.config_schema" :key="field.key" :label="field.label" :required="field.required"><el-input v-model="paymentForms[provider.id].config[field.key]" :type="field.type==='password'?'password':'text'" :show-password="field.type==='password'" autocomplete="new-password" :placeholder="field.type==='password'&&provider.secretsSet?'已配置，留空保留原值':field.required?'必填':'选填'"/></el-form-item>
@@ -48,7 +50,7 @@ import {ElMessage,ElMessageBox} from 'element-plus'
 import ListPager from './ListPager.vue'
 import {useRecords} from './records'
 const props=defineProps({page:String,data:Object,api:Function,refresh:Function}),emit=defineEmits(['publish'])
-const kinds={WEB:'网页系统',H5:'H5 / 移动网页',MINIAPP:'小程序项目',OTHER:'其他项目'},policies={PENDING:'待确认',STOP_ALL:'暂停全部业务请求',FINISH_EXISTING:'停止新业务，允许在途完成'},mailStatuses={PENDING:'待发送',RETRY:'等待重试',SENT:'已发送',FAILED:'发送失败'},paymentMethods=['H5','JSAPI','NATIVE','APP'],paymentMethodLabels={H5:'H5 网页支付',JSAPI:'JSAPI 公众号支付',NATIVE:'Native 扫码支付',APP:'App 支付'}
+const kinds={WEB:'网页系统',H5:'H5 / 移动网页',MINIAPP:'小程序项目',OTHER:'其他项目'},policies={PENDING:'待确认',STOP_ALL:'暂停全部业务请求',FINISH_EXISTING:'停止新业务，允许在途完成'},mailStatuses={PENDING:'待发送',RETRY:'等待重试',SENT:'已发送',FAILED:'发送失败'},paymentMethods=['H5','JSAPI','OFFICIAL','NATIVE','APP'],paymentMethodLabels={H5:'H5 网页支付',JSAPI:'小程序支付（JSAPI）',OFFICIAL:'公众号支付（JSAPI）',NATIVE:'Native 扫码支付',APP:'App 支付'}
 const visible=ref(false),kind=ref('product'),editing=ref(false),form=reactive({}),saving=ref(false),syncing=ref(''),mail=reactive({}),paymentForms=reactive({}),productId=ref('detla'),product=computed(()=>props.data.products.find(row=>row.id===productId.value)),itemsVisible=ref(false),items=ref([]),release=ref(null)
 const mailSnapshot=ref(''),paymentSnapshots=reactive({}),recipientDraft=ref('')
 function setMail(value){const operatorEmails=Array.isArray(value?.operatorEmails)?value.operatorEmails:(value?.operatorEmail?[value.operatorEmail]:[]);const normalized={security:'TLS',port:465,senderName:'沧烁授权中心',...value,operatorEmails,password:''};delete normalized.operatorEmail;Object.assign(mail,normalized);mailSnapshot.value=JSON.stringify(mail)}

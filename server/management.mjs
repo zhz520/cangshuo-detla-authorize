@@ -10,9 +10,12 @@ const releaseNotesUrl = (productId, version, publicBase) => {
   const target = `/public/release-notes/${encodeURIComponent(productId)}/${encodeURIComponent(version)}`
   return publicBase ? new URL(target, publicBase).href : target
 }
-export const PAYMENT_METHODS = ['H5', 'JSAPI', 'NATIVE', 'APP']
+export const PAYMENT_METHODS = ['H5', 'JSAPI', 'OFFICIAL', 'NATIVE', 'APP']
 const WECHAT_PAY_FIELDS = [
-  {key:'appId',label:'支付关联 AppID',type:'text',required:true},
+  {key:'appId',label:'小程序支付 AppID（JSAPI）',type:'text',required:true},
+  {key:'officialAppId',label:'公众号支付 AppID',type:'text',required:false},
+  {key:'officialAppSecret',label:'公众号 AppSecret',type:'password',required:false},
+  {key:'officialReturnOrigin',label:'公众号支付站点 Origin',type:'text',required:false},
   {key:'merchantId',label:'微信支付商户号',type:'text',required:true},
   {key:'apiV3Key',label:'API v3 密钥',type:'password',required:true},
   {key:'merchantSerialNo',label:'商户证书序列号',type:'text',required:true},
@@ -79,6 +82,7 @@ export class Management {
       }
       this.db.prepare("UPDATE plugins SET status='RETIRED' WHERE id IN ('aliyun_sms','wechat_miniapp')").run()
       this.db.prepare('INSERT OR IGNORE INTO payment_providers(id,name,description,config_schema,config,enabled,methods,updated_at,created_at) VALUES (?,?,?,?,?,?,?,?,?)').run('wechat_pay','微信支付','系统统一维护商户参数，项目选择是否接入及默认支付方式。',JSON.stringify(WECHAT_PAY_FIELDS),'{}',0,JSON.stringify(['H5','JSAPI']),stamp(),stamp())
+      this.db.prepare("UPDATE payment_providers SET config_schema=? WHERE id='wechat_pay'").run(JSON.stringify(WECHAT_PAY_FIELDS))
       const provider=this.db.prepare("SELECT config FROM payment_providers WHERE id='wechat_pay'").get()
       if(provider?.config==='{}') {
         const legacy=this.db.prepare("SELECT ip.config,ip.enabled FROM instance_plugins ip WHERE ip.plugin_id='wechat_pay' AND ip.config<>'{}' ORDER BY ip.updated_at DESC LIMIT 1").get()
@@ -261,6 +265,8 @@ export class Management {
     if(methods.length>PAYMENT_METHODS.length||methods.some(method=>!PAYMENT_METHODS.includes(method)))fail('支付方式选择不正确')
     const enabled=body.enabled===true
     if(enabled){if(!methods.length)fail('启用支付通道前至少选择一种支付方式');for(const field of schema.filter(field=>field.required))if(!config[field.key])fail(`启用前请填写${field.label}`)}
+    if(methods.includes('OFFICIAL'))for(const [key,label] of [['officialAppId','公众号支付 AppID'],['officialAppSecret','公众号 AppSecret'],['officialReturnOrigin','公众号支付站点 Origin']])if(!config[key])fail(`选择公众号支付前请填写${label}`)
+    if(config.officialReturnOrigin){try{const url=new URL(config.officialReturnOrigin);if(url.protocol!=='https:'||url.username||url.password||url.search||url.hash||(url.pathname&&url.pathname!=='/'))fail('公众号支付站点 Origin 必须是不含路径的 HTTPS 地址')}catch{fail('公众号支付站点 Origin 必须是不含路径的 HTTPS 地址')}}
     if(config.notifyUrl){try{const url=new URL(config.notifyUrl);if(!['http:','https:'].includes(url.protocol)||url.username||url.password)fail('支付回调地址不正确')}catch{fail('支付回调地址不正确')}}
     return this.store.transaction(()=>{
       this.db.prepare('UPDATE payment_providers SET config=?,enabled=?,methods=?,updated_at=? WHERE id=?').run(JSON.stringify(config),enabled?1:0,JSON.stringify(methods),stamp(),id)
