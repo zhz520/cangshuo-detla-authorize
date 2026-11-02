@@ -59,7 +59,6 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
       if (route === '/api/client/report' && method === 'POST') {
         const claims=store.reportVersion(body.license, body.version)
         store.management.updateNotification(claims.instanceId,body.updateResult)
-        try { await store.releaseService.sync(JSON.parse(Buffer.from(claims.project.payload,'base64url')).productId) } catch {}
         const productId=JSON.parse(Buffer.from(claims.project.payload,'base64url')).productId
         return json({...claims,updates:store.management.clientUpdates(productId,body.version,requestBaseUrl(request) || undefined),modules:store.management.clientModules(productId)})
       }
@@ -130,6 +129,7 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
       try { if (!(await stat(target)).isFile()) target = path.join(root, 'index.html') } catch { if(path.extname(pathname))fail('资源不存在，请刷新页面重试',404);target = path.join(root, 'index.html') }
       const extension = path.extname(target), types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.ico': 'image/x-icon', '.woff2': 'font/woff2' }
       if (!types[extension]) fail('资源不存在', 404)
+      if (/^\/assets\/[^/]+-[A-Za-z0-9_-]{8,}\.(?:js|css|woff2|svg|png|jpg)$/.test(pathname)) response.setHeader('Cache-Control','public, max-age=31536000, immutable')
       response.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
       const content = await readFile(target); response.writeHead(200, { 'Content-Type': types[extension] }); response.end(content)
     } catch (error) {

@@ -15,7 +15,15 @@ async function background() {
   try {store.management.scheduleNotifications();await mailer.process()} catch(error) {console.error('authority_notifications_failed',error.name)}
 }
 const timer=setInterval(background,60000);timer.unref()
-const releaseTimer=setInterval(async()=>{for(const product of store.management.lists().products)try{await store.releaseService.sync(product.id)}catch{}},3600000);releaseTimer.unref()
+// Client renewal reports use the local catalog. External checks must not block them.
+let checkingReleases=false
+async function checkReleases(){
+  if(checkingReleases)return
+  checkingReleases=true
+  try{for(const product of store.db.prepare("SELECT id FROM products WHERE repository<>''").all())try{await store.releaseService.sync(product.id)}catch{}}finally{checkingReleases=false}
+}
+const releaseTimer=setInterval(checkReleases,15*60000);releaseTimer.unref()
+setTimeout(checkReleases,5000).unref()
 setTimeout(background,5000).unref()
 server.listen(Number(process.env.PORT || 17441), process.env.HOST || '127.0.0.1', () => console.log(`授权运营后台已启动：${process.env.HOST || '127.0.0.1'}:${process.env.PORT || 17441}`))
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => server.close(() => { store.close(); process.exit(0) }))

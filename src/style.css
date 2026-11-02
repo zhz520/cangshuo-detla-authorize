@@ -9,3 +9,13 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}body{min-width:320px;ov
 }
 @media(max-width:480px){.breadcrumb{display:none}.content{padding:20px 12px}.page-heading{gap:16px}.actions{width:100%}.actions .el-button{margin-left:0;min-height:40px}.stats article{padding:14px}.stats strong{font-size:28px}.el-card__body{padding:16px!important}.login-card{width:100%;padding:28px 22px}.el-dialog{max-width:calc(100vw - 20px);padding:16px;--el-dialog-margin-top:3vh}.el-dialog__footer .el-button{min-height:40px}.el-dialog .amount-row,.el-dialog .update-item{grid-template-columns:1fr}.section-title{gap:12px;flex-wrap:wrap}}
 @media(prefers-reduced-motion:reduce){.shell>aside{transition:none}}
+
+/* Shared feedback and lists stay usable while background data is refreshed. */
+.page-heading{flex-wrap:wrap}.page-heading>div{min-width:0}.page-heading h1:focus{outline:none}
+.data-error,.draft-notice{margin-bottom:18px}.page-loading{padding:64px 20px;text-align:center;color:#69778d;background:#fff;border:1px solid #e4e9f1;border-radius:12px}
+.list-footer{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-top:20px;color:#7b879a;font-size:12px}
+.el-table__empty-text{line-height:1.7;padding:24px 12px}.header-actions>span{max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.el-dialog{display:flex;flex-direction:column;max-height:88vh;max-height:88dvh}.el-dialog__body{overflow-y:auto;overscroll-behavior:contain;min-height:0}.el-dialog__header,.el-dialog__footer{flex-shrink:0}
+.el-table .cell .el-button+.el-button{margin-left:8px}.el-card__body>.table-toolbar .el-input{min-width:0}
+@media(max-width:900px){.page-heading .actions{max-width:100%}.el-dialog{max-height:88vh;max-height:88dvh}.header-actions>span{max-width:90px}.el-pagination{max-width:100%}.list-footer{gap:12px}}
+@media(max-width:480px){.list-footer{flex-direction:column;align-items:flex-start}.list-footer .el-pagination{--el-pagination-button-width:28px;--el-pagination-button-height:32px}.el-pagination.is-background .btn-prev,.el-pagination.is-background .btn-next,.el-pagination.is-background .el-pager li{min-width:28px;margin:0 2px}.el-dialog{max-height:94vh;max-height:94dvh}.header-actions>span{max-width:68px}.ops-toolbar>.el-button{white-space:normal;height:auto;min-height:40px}.payment-form .el-checkbox-group{display:flex;flex-direction:column;align-items:flex-start}.el-message{max-width:calc(100vw - 24px)}}

@@ -138,19 +138,11 @@ export class AuthorityStore {
   }
   logout(token) { if (token) this.db.prepare('DELETE FROM sessions WHERE token_hash=?').run(digest(token)) }
   lists() {
-    const latestStable = this.db.prepare("SELECT version FROM releases WHERE status='PUBLISHED' AND channel='stable' ORDER BY published_at DESC LIMIT 1").get()?.version || null
-    const instances = this.db.prepare('SELECT i.*,c.name AS customer_name FROM instances i JOIN customers c ON c.id=i.customer_id ORDER BY i.created_at DESC').all().map(row => {
-      let updateAvailable = false
-      if (row.client_version && latestStable) try { updateAvailable = compareVersions(row.client_version, latestStable) < 0 } catch {}
-      return {...row, domains: JSON.parse(row.domains || '[]'), latest_version: latestStable, update_available: updateAvailable}
-    })
     return {
       customers: this.db.prepare('SELECT * FROM customers ORDER BY created_at DESC').all(),
-      instances,
       modules: this.db.prepare('SELECT * FROM modules ORDER BY id').all(),
       orders: this.db.prepare('SELECT o.*,i.customer_id,c.name AS customer_name,m.name AS module_name FROM orders o JOIN instances i ON i.id=o.instance_id JOIN customers c ON c.id=i.customer_id JOIN modules m ON m.id=o.module_id ORDER BY o.created_at DESC').all(),
       licenses: this.db.prepare('SELECT l.id,l.order_id,l.instance_id,l.issued_at,l.expires_at,i.customer_id,i.domains FROM licenses l JOIN instances i ON i.id=l.instance_id ORDER BY l.issued_at DESC').all().map(row => ({...row, domains: JSON.parse(row.domains || '[]')})),
-      releases: this.db.prepare('SELECT * FROM releases ORDER BY created_at DESC').all(),
       audit: this.db.prepare('SELECT * FROM audit ORDER BY id DESC LIMIT 200').all(),
       ...this.management.lists()
     }
@@ -216,6 +208,7 @@ export class AuthorityStore {
     const minVersion=text(body.minVersion??existing.min_version,'最低客户端版本',80);compareVersions(minVersion,minVersion)
     const productId=body.productId==null?existing.product_id:identifier(body.productId,'软件编号')
     if(!this.db.prepare('SELECT id FROM products WHERE id=?').get(productId))fail('软件不存在',404)
+    if(productId!==existing.product_id&&(this.db.prepare('SELECT 1 FROM orders WHERE module_id=? LIMIT 1').get(id)||this.db.prepare('SELECT 1 FROM entitlements WHERE module_id=? LIMIT 1').get(id)))fail('已有订单或授权的模块不能更换所属软件',409)
     const price = body.priceCents === undefined ? existing.price_cents : body.priceCents == null ? null : integer(body.priceCents, '价格（分）')
     const days = body.termDays==null?existing.term_days:integer(body.termDays, '授权天数', 0, 3660), status = body.status??existing.status
     if (!['DRAFT', 'ACTIVE'].includes(status) || (status === 'ACTIVE' && price == null)) fail('模块上架前必须配置价格')

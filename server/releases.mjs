@@ -19,7 +19,11 @@ export function releaseItems(value) {
   return items
 }
 export class Releases {
-  constructor(store,{fetcher=fetch,token=process.env.GITHUB_TOKEN}={}) { this.store=store;this.db=store.db;this.fetcher=fetcher;this.token=token;this.running=new Map() }
+  constructor(store,{fetcher=fetch,token=process.env.GITHUB_TOKEN}={}) { this.store=store;this.db=store.db;this.fetcher=fetcher;this.token=token;this.running=new Map();this.failedAt=new Map() }
+  validateFeatures(productId,items) {
+    for(const item of items)if(item.featureId&&!this.db.prepare('SELECT 1 FROM modules WHERE id=? AND product_id=?').get(item.featureId,productId))fail('更新项引用的付费模块不存在或不属于当前软件')
+    return items
+  }
   product(id=DEFAULT_PRODUCT) { const row=this.db.prepare('SELECT * FROM products WHERE id=?').get(id);if(!row)fail('软件不存在',404);return row }
   create(body,actor) {
     const product=this.product(body.productId),version=text(body.version,'版本号',80);compareVersions(version,version)
@@ -28,7 +32,7 @@ export class Releases {
     const notes=text(body.notes,'更新说明',20000);let url
     try{url=new URL(body.sourceUrl)}catch{fail('请填写有效的 GitHub Release 地址')}
     if (url.origin!=='https://github.com'||url.pathname!==`/${product.repository}/releases/tag/v${version}`||url.username||url.password||url.search||url.hash) fail('请选择当前软件客户端仓库中的 GitHub Release 地址')
-    const items=releaseItems(body.items||[])
+    const items=this.validateFeatures(product.id,releaseItems(body.items||[]))
     this.db.prepare('INSERT INTO release_catalog(product_id,version,channel,notes,source_url,status,created_at,items) VALUES (?,?,?,?,?,?,?,?)').run(product.id,version,'stable',notes,url.href,'DRAFT',stamp(),JSON.stringify(items))
     this.store.audit(actor,'CREATE_RELEASE_DRAFT',product.id+':'+version);return {version,productId:product.id}
   }
@@ -49,17 +53,19 @@ export class Releases {
     if (this.running.has(productId)) return this.running.get(productId)
     const product=this.product(productId)
     if (!product.repository) fail('该软件未关联 GitHub 仓库，无需检查正式版',409)
+    if (!force && Date.now()-(this.failedAt.get(productId)||0)<60000) return {cached:true,...this.store.management.clientUpdates(productId,'0.0.0')}
     if (!force && product.checked_at && Date.now()-Date.parse(product.checked_at)<15*60000) return {cached:true,...this.store.management.clientUpdates(productId,'0.0.0')}
-    const task=this.fetchReleases(product).finally(()=>this.running.delete(productId));this.running.set(productId,task);return task
+    const task=this.fetchReleases(product).then(result=>{this.failedAt.delete(productId);return result},error=>{this.failedAt.set(productId,Date.now());throw error}).finally(()=>this.running.delete(productId));this.running.set(productId,task);return task
   }
   async fetchReleases(product) {
     try {
       const collected=[]
+      const signal=AbortSignal.timeout(25000)
       for(let page=1;page<=20;page++) {
         const headers={Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'Cangshuo-Authority'}
         const token=this.db.prepare('SELECT token FROM github_tokens WHERE product_id=?').get(product.id)?.token || this.token
         if(token)headers.Authorization='Bearer '+token
-        const response=await this.fetcher(`https://api.github.com/repos/${product.repository}/releases?per_page=100&page=${page}`,{headers,signal:AbortSignal.timeout(15000),redirect:'error'})
+        const response=await this.fetcher(`https://api.github.com/repos/${product.repository}/releases?per_page=100&page=${page}`,{headers,signal,redirect:'error'})
         if(!response.ok)fail(response.status===404?'GitHub 仓库不可读取：私有仓库请在“软件与仓库”配置只读令牌。':`GitHub 版本检查失败（HTTP ${response.status}）`,502)
         const rows=await response.json();if(!Array.isArray(rows))fail('GitHub 返回的版本目录无效',502)
         for(const row of rows) {
@@ -85,7 +91,7 @@ export class Releases {
     } catch(error) { this.db.prepare('UPDATE products SET check_error=? WHERE id=?').run(error.status?error.message:'GitHub 连接暂不可用，保留上次成功检查结果',product.id);throw error }
   }
   configureItems(productId,version,body,actor) {
-    const items=releaseItems(body.items)
+    const items=this.validateFeatures(productId,releaseItems(body.items))
     const result=this.db.prepare('UPDATE release_catalog SET items=? WHERE product_id=? AND version=?').run(JSON.stringify(items),productId,version)
     if(!result.changes)fail('版本不存在',404)
     this.store.audit(actor,'UPDATE_RELEASE_ITEMS',productId+':'+version,{items:items.map(item=>item.id)})

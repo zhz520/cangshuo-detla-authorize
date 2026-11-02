@@ -87,8 +87,10 @@ export class Management {
     const products = this.db.prepare('SELECT p.*,EXISTS(SELECT 1 FROM github_tokens t WHERE t.product_id=p.id) AS token_configured FROM products p ORDER BY created_at').all()
     const projects = this.db.prepare('SELECT p.*,c.name AS customer_name,s.name AS product_name,s.kind,s.repository,pay.name AS payment_provider_name,pay.enabled AS payment_provider_enabled FROM projects p JOIN customers c ON c.id=p.customer_id JOIN products s ON s.id=p.product_id LEFT JOIN payment_providers pay ON pay.id=p.payment_provider ORDER BY p.created_at DESC').all().map(row => ({...row,payment_methods:JSON.parse(row.payment_methods||'[]'),contract_total_cents:row.deposit_amount_cents==null&&row.balance_amount_cents==null?null:(row.deposit_amount_cents||0)+(row.balance_amount_cents||0),effective_status:this.projectStatus(row)}))
     const releases = this.db.prepare('SELECT r.*,p.name AS product_name FROM release_catalog r JOIN products p ON p.id=r.product_id ORDER BY r.published_at DESC,r.created_at DESC').all().map(row => ({...row,items:JSON.parse(row.items),assets:JSON.parse(row.assets)}))
+    const latestByProduct=new Map()
+    for(const release of releases)if(release.channel==='stable'&&release.status==='PUBLISHED'&&(!latestByProduct.has(release.product_id)||compareVersions(release.version,latestByProduct.get(release.product_id))>0))latestByProduct.set(release.product_id,release.version)
     const instances = this.db.prepare('SELECT i.*,c.name AS customer_name,p.name AS project_name,p.product_id,p.pause_policy,p.payment_provider,p.payment_methods,p.status AS project_status,p.maintenance_until AS project_maintenance_until FROM instances i JOIN customers c ON c.id=i.customer_id JOIN projects p ON p.id=i.project_id ORDER BY i.created_at DESC').all().map(row => {
-      const latest = releases.filter(release => release.product_id===row.product_id && release.channel==='stable' && release.status==='PUBLISHED').sort((a,b)=>compareVersions(b.version,a.version))[0]?.version || null
+      const latest = latestByProduct.get(row.product_id) || null
       return {...row,maintenance_until:row.project_maintenance_until,domains:JSON.parse(row.domains),payment_methods:JSON.parse(row.payment_methods||'[]'),latest_version:latest,update_available:!!(latest && row.client_version && compareVersions(latest,row.client_version)>0)}
     })
     return {products,projects,releases,instances,paymentProviders:this.paymentProviders(),mailSettings:this.mailSettings(),mailQueue:this.db.prepare('SELECT id,project_id,event,recipient,subject,status,attempts,next_attempt_at,last_error,created_at,sent_at FROM mail_queue ORDER BY created_at DESC LIMIT 200').all()}
@@ -120,10 +122,11 @@ export class Management {
       ? String(body.paymentProvider || '').trim()
       : (previous?.payment_provider || '')
     const selectedProvider = paymentProvider ? this.db.prepare('SELECT * FROM payment_providers WHERE id=?').get(paymentProvider) : null
-    if (paymentProvider && (!selectedProvider || selectedProvider.enabled !== 1)) fail('先到支付设置启用该支付通道，再为项目接入')
     const paymentMethods = selectedProvider ? [...new Set(Array.isArray(body.paymentMethods) ? body.paymentMethods : JSON.parse(previous?.payment_methods || '[]'))] : []
+    const samePayment=previous?.payment_provider===paymentProvider&&JSON.stringify([...paymentMethods].sort())===JSON.stringify(JSON.parse(previous.payment_methods||'[]').sort())
+    if (paymentProvider && (!selectedProvider || selectedProvider.enabled !== 1) && !samePayment) fail('先到支付设置启用该支付通道，再为项目接入')
     const supportedMethods = selectedProvider ? JSON.parse(selectedProvider.methods) : []
-    if (selectedProvider && (!paymentMethods.length || paymentMethods.some(method => !supportedMethods.includes(method)))) fail('请选择该支付通道已启用的默认支付方式')
+    if (selectedProvider && !samePayment && (!paymentMethods.length || paymentMethods.some(method => !supportedMethods.includes(method)))) fail('请选择该支付通道已启用的默认支付方式')
     const amount=(key,label,fallback)=> {
       if(!Object.prototype.hasOwnProperty.call(body,key))return fallback ?? null
       if(body[key]==null||body[key]==='')return null
@@ -160,8 +163,9 @@ export class Management {
     return envelope
   }
   clientResponse(instanceId, version) {
-    const instance = this.db.prepare('SELECT i.*,p.product_id,p.maintenance_until AS until_at,p.pause_policy,p.status,p.payment_provider,p.payment_methods,pay.enabled AS payment_enabled FROM instances i JOIN projects p ON p.id=i.project_id LEFT JOIN payment_providers pay ON pay.id=p.payment_provider WHERE i.id=?').get(instanceId)
-    const payment = instance.payment_provider && instance.payment_enabled === 1 ? {provider:instance.payment_provider,methods:JSON.parse(instance.payment_methods||'[]')} : null
+    const instance = this.db.prepare('SELECT i.*,p.product_id,p.maintenance_until AS until_at,p.pause_policy,p.status,p.payment_provider,p.payment_methods,pay.enabled AS payment_enabled,pay.methods AS provider_methods FROM instances i JOIN projects p ON p.id=i.project_id LEFT JOIN payment_providers pay ON pay.id=p.payment_provider WHERE i.id=?').get(instanceId)
+    const methods=JSON.parse(instance.payment_methods||'[]').filter(method=>JSON.parse(instance.provider_methods||'[]').includes(method))
+    const payment = instance.payment_provider && instance.payment_enabled === 1 && methods.length ? {provider:instance.payment_provider,methods} : null
     const project = this.signed('cangshuo-project-v1',{customerId:instance.customer_id,projectId:instance.project_id,productId:instance.product_id,instanceId,issuedAt:stamp(),maintenanceUntil:instance.until_at,status:instance.status,pausePolicy:instance.pause_policy,allowedDomains:JSON.parse(instance.domains),payment})
     return {project,license:this.reconcileLicense(instanceId),updates:this.clientUpdates(instance.product_id,version)}
   }
