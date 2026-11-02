@@ -25,8 +25,9 @@ export class Mailer {
   async process() {
     if(this.busy)return
     const config=this.store.management.mailSettings(true);if(!config.enabled)return
-    this.busy=true;const transport=this.transport(config)
+    this.busy=true;let transport
     try {
+      transport=this.transport(config)
       const rows=this.db.prepare("SELECT * FROM mail_queue WHERE status IN ('PENDING','RETRY') AND next_attempt_at<=? ORDER BY created_at LIMIT 10").all(stamp())
       for(const row of rows) {
         try {
@@ -38,6 +39,6 @@ export class Mailer {
           this.db.prepare('UPDATE mail_queue SET status=?,attempts=?,next_attempt_at=?,last_error=? WHERE id=?').run(attempts>=5?'FAILED':'RETRY',attempts,new Date(Date.now()+Math.min(3600000,60000*2**attempts)).toISOString(),safeError,row.id)
         }
       }
-    } finally {transport.close?.();this.busy=false}
+    } finally {try{transport?.close?.()}finally{this.busy=false}}
   }
 }

@@ -6,8 +6,8 @@
     </section>
   </main>
   <div v-else class="shell">
-    <aside><div class="brand"><div class="brand-mark">C</div><div><strong>沧烁授权中心</strong><small>系统运营工作台</small></div></div><nav class="nav-scroll" aria-label="运营菜单"><section v-for="group in navigationGroups" :key="group.name" class="nav-section"><div class="nav-label">{{ group.name }}</div><button v-for="item in group.items" :key="item.id" :class="{selected:page===item.id}" :title="item.name" @click="page=item.id"><component :is="item.icon"/><span>{{ item.name }}</span></button></section></nav><div class="aside-bottom">独立运营后台<br/>客户业务系统单独维护</div></aside>
-    <div class="workspace"><header><div><span class="breadcrumb">平台运营 / </span><strong>{{ title }}</strong></div><div class="header-actions"><el-tag type="info">人工开通</el-tag><span>{{ username }}</span><el-button text @click="logout">退出</el-button></div></header>
+    <button v-if="menuOpen" class="nav-backdrop" aria-label="关闭菜单" @click="menuOpen=false"/><aside :class="{'is-open':menuOpen}"><div class="brand"><div class="brand-mark">C</div><div><strong>沧烁授权中心</strong><small>系统运营工作台</small></div></div><nav class="nav-scroll" aria-label="运营菜单"><section v-for="group in navigationGroups" :key="group.name" class="nav-section"><div class="nav-label">{{ group.name }}</div><button v-for="item in group.items" :key="item.id" :class="{selected:page===item.id}" :title="item.name" @click="page=item.id;menuOpen=false"><component :is="item.icon"/><span>{{ item.name }}</span></button></section></nav><div class="aside-bottom">独立运营后台<br/>客户业务系统单独维护</div></aside>
+    <div class="workspace"><header><div class="header-title"><button class="menu-toggle" aria-label="打开菜单" :aria-expanded="menuOpen" @click="menuOpen=!menuOpen">☰</button><span class="breadcrumb">平台运营 / </span><strong>{{ title }}</strong></div><div class="header-actions"><el-tag type="info">人工开通</el-tag><span>{{ username }}</span><el-button text @click="logout">退出</el-button></div></header>
       <section class="content" v-loading="busy">
         <div class="page-heading"><div><p class="eyebrow">{{ page==='overview'?'CONTROL CENTER':'PLATFORM MANAGEMENT' }}</p><h1>{{ title }}</h1><p class="muted">{{ descriptions[page] }}</p></div><div class="actions"><el-button @click="refresh">刷新</el-button><el-button v-if="createActions[page]" type="primary" @click="open(createActions[page])">{{ createLabels[page] }}</el-button><el-button v-if="page==='licenses'" type="primary" @click="showPublicKey">查看验证公钥</el-button></div></div>
         <template v-if="page==='overview'">
@@ -42,6 +42,7 @@
 </template>
 
 <script setup>
+import {fetchWithTimeout} from './request'
 import { computed, onMounted, reactive, ref } from 'vue'
 import Operations from './Operations.vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -56,6 +57,7 @@ const navigation=computed(()=>navigationGroups.flatMap(group=>group.items))
 const descriptions={overview:'一个运营中心，管理所有客户的功能授权。',customers:'登记客户编号与名称，与客户系统独立维护。',instances:'将授权绑定到客户系统显示的实例编号。',modules:'先确认价格与期限，再开放人工购买。',products:'登记不同类型的软件项目与 GitHub 正式版仓库。',projects:'按项目维护到期时间、暂停策略、支付接入和通知邮箱。',payments:'统一维护支付通道参数，再由项目选择默认接入与支付方式。',mail:'配置邮箱发信与查看重要通知发送记录。',orders:'核对人工收款后签发授权，不自动扣款。',licenses:'查看与交付签名授权，签发私钥留在运营中心。',releases:'维护客户端的版本目录与发布说明。',audit:'保留客户登记、收款确认和签发记录。'}
 const actionLabels={SAVE_PRODUCT:'保存软件与仓库',UPDATE_CUSTOMER:'更新客户',DELETE_CUSTOMER:'删除客户',CREATE_PROJECT:'新增项目',UPDATE_PROJECT:'更新项目维护',CREATE_MODULE:'登记功能模块',UPDATE_MAIL_SETTINGS:'保存邮箱配置',QUEUE_TEST_MAIL:'测试发信',RETRY_MAIL:'重试邮件',UPDATE_RELEASE_ITEMS:'配置更新内容',CREATE_UPDATE_PLAN:'生成更新计划',REISSUE_MAINTENANCE_LICENSE:'同步维护授权',EXPORT_INSTANCE_IDENTITY:'导出实例接入凭据',CLIENT_VERSION_REPORT:'客户端版本上报',LOGIN:'登录后台',CREATE_CUSTOMER:'登记客户',CREATE_INSTANCE:'登记实例',UPDATE_INSTANCE:'更新授权域名/维护期',UPDATE_MODULE:'调整模块价格',CREATE_ORDER:'创建购买订单',CONFIRM_MANUAL_PAYMENT:'确认人工收款',UPDATE_PLUGIN:'配置客户插件',GRANT_MAINTENANCE_ACCESS:'维护期接入',ISSUE_LICENSE:'签发授权',CREATE_RELEASE_DRAFT:'登记版本草稿',PUBLISH_RELEASE_METADATA:'发布版本信息'}
 const createActions={customers:'customer',instances:'instance',orders:'order',modules:'newModule'},createLabels={customers:'新增客户',instances:'登记实例',orders:'创建订单',modules:'登记功能模块',releases:'新增版本'}
+const menuOpen=ref(false)
 const ready=ref(false),loggedIn=ref(false),username=ref(''),csrf=ref(''),busy=ref(false),saving=ref(false),page=ref('overview'),search=ref('')
 const credentials=reactive({username:'admin',password:''}),data=reactive({products:[],projects:[],paymentProviders:[],mailSettings:{},mailQueue:[],customers:[],instances:[],modules:[],orders:[],licenses:[],releases:[],audit:[]})
 const title=computed(()=>navigation.value.find(item=>item.id===page.value)?.name)
@@ -66,8 +68,8 @@ function time(value){return value?new Date(value).toLocaleString('zh-CN',{hour12
 function status(value){return {ACTIVE:'已启用',DISABLED:'已停用',DRAFT:'草稿',UNPAID:'待收款',PAID:'已收款',MAINTENANCE:'维护期接入',CANCELLED:'已作废',PUBLISHED:'已发布'}[value]||value}
 async function api(url,{method='GET',body}={}){
   const headers={};if(method!=='GET'){headers['Content-Type']='application/json';headers['X-CSRF-Token']=csrf.value}
-  const response=await fetch('/api'+url,{method,headers,credentials:'same-origin',body:body===undefined?undefined:JSON.stringify(body)})
-  const result=await response.json();if(!response.ok){if(response.status===401)loggedIn.value=false;throw new Error(result.message||'操作失败')}return result
+  let response;try{response=await fetchWithTimeout('/api'+url,{method,headers,credentials:'same-origin',body:body===undefined?undefined:JSON.stringify(body)})}catch{throw new Error('网络连接超时或中断，请检查网络后重试')}
+  let result;try{result=await response.json()}catch{throw new Error('服务返回异常，请刷新或联系维护人员')};if(!response.ok){if(response.status===401)loggedIn.value=false;throw new Error(result.message||'操作失败')}return result
 }
 async function refresh(){busy.value=true;try{Object.assign(data,await api('/data'))}catch(error){ElMessage.error(error.message)}finally{busy.value=false}}
 async function login(){busy.value=true;try{const session=await api('/login',{method:'POST',body:credentials});username.value=session.username;csrf.value=session.csrf;credentials.password='';loggedIn.value=true;await refresh()}catch(error){ElMessage.error(error.message)}finally{busy.value=false}}
@@ -88,7 +90,7 @@ async function maintenanceGrant(order){try{const result=await ElMessageBox.promp
 async function showPublicKey(){try{deliveryText.value=(await api('/public-key')).publicKey;deliveryType.value='key';deliveryName.value='license-public.pem';deliveryVisible.value=true}catch(error){ElMessage.error(error.message)}}
 async function copyDelivery(){try{await navigator.clipboard.writeText(deliveryText.value);ElMessage.success('已复制')}catch{ElMessage.info('请手动选中并复制内容')}}
 function downloadDelivery(){const url=URL.createObjectURL(new Blob([deliveryText.value],{type:'text/plain;charset=utf-8'}));const anchor=document.createElement('a');anchor.href=url;anchor.download=deliveryName.value;anchor.click();setTimeout(()=>URL.revokeObjectURL(url),1000)}
-async function publish(release){try{await ElMessageBox.confirm('请确认 GitHub Release 与说明已经核对。此操作发布版本信息，不执行客户服务器更新。','发布版本信息',{type:'info'});await api(`/releases/${encodeURIComponent(release.version)}/publish`,{method:'POST',body:{}});await refresh();ElMessage.success('版本信息已发布')}catch(error){if(error?.message)ElMessage.error(error.message)}}
+async function publish(release){try{await ElMessageBox.confirm('请确认 GitHub Release 与说明已经核对。此操作发布版本信息，不执行客户服务器更新。','发布版本信息',{type:'info'});await api(`/releases/${encodeURIComponent(release.version)}/publish`,{method:'POST',body:{productId:release.product_id}});await refresh();ElMessage.success('版本信息已发布')}catch(error){if(error?.message)ElMessage.error(error.message)}}
 onMounted(async()=>{try{const session=await api('/session');if(session.authenticated){loggedIn.value=true;username.value=session.username;csrf.value=session.csrf;await refresh()}}catch(error){ElMessage.error('运营服务连接失败：'+error.message)}finally{ready.value=true}})
 </script>
 <style>

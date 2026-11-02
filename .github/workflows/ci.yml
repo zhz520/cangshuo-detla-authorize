@@ -25,3 +25,20 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npx --no-install playwright install --with-deps chromium webkit
+      - run: npm run build
+      - run: npm run test:browser
+        env:
+          E2E_OUTPUT: ${{ runner.temp }}/authority-browser

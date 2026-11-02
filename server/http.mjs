@@ -73,7 +73,7 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
         if (!['GET', 'HEAD'].includes(method) && !equal(request.headers['x-csrf-token'], session.csrf)) fail('请求校验失败，请刷新页面', 403)
         if (route === '/api/logout' && method === 'POST') { store.logout(token); response.setHeader('Set-Cookie', 'authority_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'); return json({ ok: true }) }
         if (route === '/api/data' && method === 'GET') return json(store.lists())
-        if (route === '/api/public-key' && method === 'GET') return json({ publicKey: store.publicKey, format: 'delta-license-v1', minimumClientVersion: '1.1.0-preview.2' })
+        if (route === '/api/public-key' && method === 'GET') return json({ publicKey: store.publicKey, format: 'delta-license-v1', minimumClientVersion: '1.2.0' })
         if (route === '/api/customers' && method === 'POST') return json(store.createCustomer(body, session.username), 201)
         if (route === '/api/instances' && method === 'POST') return json(store.createInstance(body, session.username), 201)
         if (route === '/api/orders' && method === 'POST') return json(store.createOrder(body, session.username), 201)
@@ -108,7 +108,7 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
       const root = path.resolve(staticDirectory), candidate = path.resolve(root, '.' + pathname)
       if (!candidate.startsWith(root + path.sep) && candidate !== root) fail('资源不存在', 404)
       let target = candidate
-      try { if (!(await stat(target)).isFile()) target = path.join(root, 'index.html') } catch { target = path.join(root, 'index.html') }
+      try { if (!(await stat(target)).isFile()) target = path.join(root, 'index.html') } catch { if(path.extname(pathname))fail('资源不存在，请刷新页面重试',404);target = path.join(root, 'index.html') }
       const extension = path.extname(target), types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.ico': 'image/x-icon', '.woff2': 'font/woff2' }
       if (!types[extension]) fail('资源不存在', 404)
       response.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")

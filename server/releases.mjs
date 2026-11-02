@@ -24,7 +24,9 @@ export class Releases {
   create(body,actor) {
     const product=this.product(body.productId),version=text(body.version,'版本号',80);compareVersions(version,version)
     if (body.channel!=='stable' || version.includes('-')) fail('只允许发布 GitHub 正式版')
-    const notes=text(body.notes,'更新说明',20000),url=new URL(body.sourceUrl)
+    if(!product.repository)fail('请先为该软件关联 GitHub 仓库')
+    const notes=text(body.notes,'更新说明',20000);let url
+    try{url=new URL(body.sourceUrl)}catch{fail('请填写有效的 GitHub Release 地址')}
     if (url.origin!=='https://github.com'||url.pathname!==`/${product.repository}/releases/tag/v${version}`||url.username||url.password||url.search||url.hash) fail('请选择当前软件客户端仓库中的 GitHub Release 地址')
     const items=releaseItems(body.items||[])
     this.db.prepare('INSERT INTO release_catalog(product_id,version,channel,notes,source_url,status,created_at,items) VALUES (?,?,?,?,?,?,?,?)').run(product.id,version,'stable',notes,url.href,'DRAFT',stamp(),JSON.stringify(items))
