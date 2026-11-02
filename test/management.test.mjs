@@ -168,6 +168,8 @@ test('official WeChat notifications are a priced catalog module and module CRUD 
   assert.equal(item.price_cents,10000);assert.equal(item.status,'ACTIVE');assert.equal(item.product_id,'detla')
   const identity=store.lists().modules.find(row=>row.id==='identity_verification')
   assert.equal(identity.price_cents,2000);assert.equal(identity.status,'ACTIVE');assert.equal(identity.min_version,'1.4.0');assert.equal(identity.product_id,'detla')
+  const email=store.lists().modules.find(row=>row.id==='email_notifications')
+  assert.equal(email.price_cents,5000);assert.equal(email.status,'ACTIVE');assert.equal(email.min_version,'1.4.2');assert.equal(email.product_id,'detla')
   store.management.saveModule({id:'temporary_feature',productId:'detla',name:'临时功能',description:'增删改查',minVersion:'1.3.5',priceCents:5000,termDays:365,status:'ACTIVE'},'owner')
   store.updateModule('temporary_feature',{name:'临时功能修改',priceCents:6000,status:'DRAFT'},'owner')
   let row=store.lists().modules.find(item=>item.id==='temporary_feature');assert.equal(row.price_cents,6000);assert.equal(row.name,'临时功能修改')
