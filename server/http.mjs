@@ -60,7 +60,8 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
         const claims=store.reportVersion(body.license, body.version)
         store.management.updateNotification(claims.instanceId,body.updateResult)
         try { await store.releaseService.sync(JSON.parse(Buffer.from(claims.project.payload,'base64url')).productId) } catch {}
-        return json({...claims,updates:store.management.clientUpdates(JSON.parse(Buffer.from(claims.project.payload,'base64url')).productId,body.version,requestBaseUrl(request) || undefined)})
+        const productId=JSON.parse(Buffer.from(claims.project.payload,'base64url')).productId
+        return json({...claims,updates:store.management.clientUpdates(productId,body.version,requestBaseUrl(request) || undefined),modules:store.management.clientModules(productId)})
       }
       if(route==='/api/client/update-plan' && method==='POST')return json(store.releaseService.plan(body))
       if(route==='/api/client/artifact' && method==='POST') {

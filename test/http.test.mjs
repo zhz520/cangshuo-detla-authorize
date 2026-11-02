@@ -50,6 +50,7 @@ test('operations HTTP routes support a complete isolated customer/project/licens
   const report=await call('/api/client/report','POST',{license:identity,version:'1.2.0'})
   assert.match(report.result.updates.releases[0].sourceUrl,/\/public\/release-notes\/other\/2\.0\.0$/)
   assert.doesNotMatch(JSON.stringify(report.result.updates),/github\.com/i)
+  assert.equal(report.result.modules.find(row=>row.id==='http_module').priceCents,100)
   await call('/api/releases','POST',{version:'2.0.0',channel:'stable',notes:'invalid link',sourceUrl:'not-url'},400)
   await call('/api/customers/http-customer','DELETE',undefined,409)
   await call('/api/no-such-route','GET',undefined,404)

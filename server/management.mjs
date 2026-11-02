@@ -54,6 +54,7 @@ export class Management {
     store.transaction(() => {
       this.db.prepare('INSERT OR IGNORE INTO products(id,name,kind,repository,created_at) VALUES (?,?,?,?,?)').run(DEFAULT_PRODUCT,'电竞业务系统','WEB','zhz520/cangshuo-detla',stamp())
       this.db.prepare("INSERT OR IGNORE INTO modules(id,name,description,price_cents,term_days,status,min_version,product_id) VALUES (?,?,?,?,?,?,?,?)").run('official_wechat_notifications','公众号模板通知','公众号账号绑定及新订单、接单、订单完成、素材审核和提现审核模板通知。',10000,365,'ACTIVE','1.3.5',DEFAULT_PRODUCT)
+      this.db.prepare("INSERT OR IGNORE INTO modules(id,name,description,price_cents,term_days,status,min_version,product_id) VALUES (?,?,?,?,?,?,?,?)").run('identity_verification','实名认证','用户实名资料提交、人工审核、状态回显与隐私删除。',2000,365,'ACTIVE','1.4.0',DEFAULT_PRODUCT)
       for (const instance of this.db.prepare('SELECT * FROM instances WHERE project_id IS NULL').all()) {
         const projectId = randomUUID()
         this.db.prepare('INSERT INTO projects(id,customer_id,product_id,name,maintenance_until,created_at) VALUES (?,?,?,?,?,?)').run(projectId,instance.customer_id,DEFAULT_PRODUCT,instance.name,instance.maintenance_until,stamp())
@@ -192,6 +193,11 @@ export class Management {
     const releases = this.db.prepare("SELECT * FROM release_catalog WHERE product_id=? AND status='PUBLISHED' AND channel='stable'").all(productId).filter(row=>compareVersions(row.version,version)>0).sort((a,b)=>compareVersions(a.version,b.version)).map(row=>({version:row.version,notes:publicReleaseText(row.notes),sourceUrl:releaseNotesUrl(productId,row.version,publicBase),publishedAt:row.published_at,items:JSON.parse(row.items).map(item=>({...item,description:publicReleaseText(item.description)}))}))
     const all = this.db.prepare("SELECT version FROM release_catalog WHERE product_id=? AND status='PUBLISHED' AND channel='stable'").all(productId).sort((a,b)=>compareVersions(b.version,a.version))
     return {currentVersion:version,latestVersion:all[0]?.version || null,updateAvailable:releases.length>0,checkedAt:product.checked_at,checkError:product.check_error,releases}
+  }
+  clientModules(productId) {
+    return this.db.prepare("SELECT id,name,description,price_cents,term_days,min_version FROM modules WHERE product_id=? AND status='ACTIVE' ORDER BY name,id").all(productId).map(row=>({
+      id:row.id,name:row.name,description:row.description,priceCents:row.price_cents,termDays:row.term_days,minVersion:row.min_version
+    }))
   }
   mailSettings(raw=false) {
     const config = JSON.parse(this.db.prepare('SELECT config FROM mail_settings WHERE id=1').get()?.config || '{}')
