@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import {generateKeyPairSync,randomUUID,verify,createHash} from 'node:crypto'
 import {AuthorityStore} from '../server/store.mjs'
 import {Releases,releaseItems} from '../server/releases.mjs'
-import {Mailer} from '../server/mail.mjs'
+import {Mailer,renderNotificationHtml} from '../server/mail.mjs'
 
 function setup(){
  const {privateKey}=generateKeyPairSync('ed25519',{privateKeyEncoding:{type:'pkcs8',format:'pem'}})
@@ -61,6 +61,48 @@ test('expiry reminders are deduplicated and do not send to other customers',()=>
   const at=Date.parse('2028-11-24T12:00:00Z');store.management.scheduleNotifications(at);store.management.scheduleNotifications(at)
   const rows=store.lists().mailQueue;assert.equal(rows.length,1);assert.equal(rows[0].recipient,'customer@example.com');assert.equal(rows[0].project_id,project)
  }finally{f.close()}
+})
+test('multiple operator recipients are normalized, unique and receive each project event once',()=>{
+ const f=setup(),{store,project}=f;try{
+  const settings=store.management.saveMailSettings({enabled:true,host:'smtp.example.com',port:465,security:'TLS',username:'sender@example.com',password:'fake-secret',from:'sender@example.com',operatorEmails:['Ops1@Example.com','ops1@example.com','ops2@example.com']},'owner')
+  assert.deepEqual(settings.operatorEmails,['Ops1@Example.com','ops2@example.com'])
+  assert.deepEqual(store.management.mailSettings(true).operatorEmails,['Ops1@Example.com','ops2@example.com'])
+  store.management.queueProjectMail(project,'TEST','project-event','项目通知','测试')
+  store.management.queueProjectMail(project,'TEST','project-event','项目通知','测试')
+  const rows=store.lists().mailQueue.filter(row=>row.event==='TEST')
+  assert.deepEqual(rows.map(row=>row.recipient).sort(),['Ops1@Example.com','customer@example.com','ops2@example.com'])
+  assert.equal(rows.filter(row=>row.recipient.toLowerCase()==='ops1@example.com').length,1)
+ }finally{f.close()}
+})
+test('one release notification sends one copy per operator address across every project',()=>{
+ const f=setup(),{store,project}=f;try{
+  store.management.saveMailSettings({enabled:true,host:'smtp.example.com',port:465,security:'TLS',username:'sender@example.com',password:'fake-secret',from:'sender@example.com',operatorEmail:'ops@example.com'},'owner')
+  const second=store.management.saveProject(null,{customerId:'b',productId:'detla',name:'项目B',maintenanceUntil:'2029-01-01T00:00:00Z',notificationEmail:'customer-b@example.com'},'owner').id
+  store.releaseService.notify('detla','1.4.1');store.releaseService.notify('detla','1.4.1')
+  const rows=store.lists().mailQueue.filter(row=>row.event==='RELEASE')
+  assert.equal(rows.length,3)
+  assert.equal(rows.filter(row=>row.recipient==='ops@example.com').length,1)
+  assert.deepEqual(new Set(rows.filter(row=>row.project_id).map(row=>row.project_id)),new Set([project,second]))
+ }finally{f.close()}
+})
+test('a test message accepts comma or semicolon recipient lists and removes duplicate addresses',()=>{
+ const f=setup(),{store}=f;try{
+  store.management.saveMailSettings({enabled:true,host:'smtp.example.com',port:465,security:'TLS',username:'sender@example.com',password:'fake-secret',from:'sender@example.com',operatorEmails:['ops@example.com']},'owner')
+  const mailer=new Mailer(store,{transportFactory:()=>({sendMail:async()=>({accepted:[]})})})
+  const result=mailer.test({recipient:'One@Example.com, one@example.com; two@example.com'},'owner')
+  assert.deepEqual(result.recipients,['One@Example.com','two@example.com'])
+  assert.equal(store.lists().mailQueue.filter(row=>row.event==='TEST').length,2)
+ }finally{f.close()}
+})
+test('notification email HTML is branded, readable and escapes project-controlled text',()=>{
+ const html=renderNotificationHtml({event:'RELEASE',subject:'软件 <正式> 版本发布',body:'项目 <A> 已更新\n请登录后台查看。',brand:'见高山电竞'})
+ assert.match(html,/见高山电竞/)
+ assert.match(html,/正式版本发布/)
+ assert.match(html,/项目 &lt;A&gt; 已更新/)
+ assert.match(html,/请登录后台查看/)
+ assert.match(html,/软件 &lt;正式&gt; 版本发布/)
+ assert.doesNotMatch(html,/项目 <A> 已更新/)
+ assert.doesNotMatch(html,/<img|<script/i)
 })
 test('update plans lock required dependencies, validate packages and reject unpaid modules',()=>{
  const f=setup(),{store,instance}=f;try{

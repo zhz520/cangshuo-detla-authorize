@@ -35,8 +35,10 @@ test('operations HTTP routes support a complete isolated customer/project/licens
   const license=(await call('/api/orders/'+order.id+'/issue','POST',{})).result
   await call('/api/licenses/'+license.id)
   await call('/api/payments/wechat_pay','PUT',{enabled:false,methods:['H5'],config:{}})
-  await call('/api/mail/settings','PUT',{enabled:true,host:'smtp.example.com',port:465,security:'TLS',username:'operator@example.com',password:'TEST-ONLY-NOT-REAL',from:'operator@example.com',operatorEmail:'operator@example.com'})
-  await call('/api/mail/test','POST',{recipient:'recipient@example.com'})
+  const mailSettings=(await call('/api/mail/settings','PUT',{enabled:true,host:'smtp.example.com',port:465,security:'TLS',username:'operator@example.com',password:'TEST-ONLY-NOT-REAL',from:'operator@example.com',operatorEmails:['operator@example.com','second-operator@example.com','OPERATOR@example.com']})).result
+  assert.deepEqual(mailSettings.operatorEmails,['operator@example.com','second-operator@example.com'])
+  await call('/api/mail/test','POST',{recipient:'recipient@example.com, RECIPIENT@example.com; second@example.com'})
+  assert.equal(store.lists().mailQueue.filter(row=>row.event==='TEST').length,2)
   const mail=store.lists().mailQueue.find(row=>row.event==='TEST');store.db.prepare("UPDATE mail_queue SET status='FAILED' WHERE id=?").run(mail.id)
   await call('/api/mail/'+mail.id+'/retry','POST',{})
   await call('/api/releases','POST',{productId:'other',version:'2.0.0',channel:'stable',notes:'其他软件更新 https://github.com/owner/private/blob/main/secret',sourceUrl:'https://github.com/owner/other/releases/tag/v2.0.0'},201)

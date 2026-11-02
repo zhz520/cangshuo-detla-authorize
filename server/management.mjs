@@ -27,6 +27,18 @@ export function emailAddress(value) {
   if (!/^[^\s<>@,;]+@[^\s<>@,;]+\.[^\s<>@,;]+$/.test(String(value || '')) || value.length > 254) fail('邮箱地址格式不正确')
   return value
 }
+export function emailAddresses(value, {label='邮箱地址'}={}) {
+  const values=(Array.isArray(value)?value:[value]).flatMap(item=>String(item??'').split(/[,;\n]+/))
+  const addresses=[],seen=new Set()
+  for(const candidate of values) {
+    const raw=String(candidate??'').trim();if(!raw)continue
+    const address=emailAddress(raw),normalized=address.toLowerCase()
+    if(seen.has(normalized))continue
+    seen.add(normalized);addresses.push(address)
+    if(addresses.length>20)fail(`${label}最多配置 20 个`)
+  }
+  return addresses
+}
 export function repositoryName(value) {
   const raw = String(value || '').trim()
   if (!raw) return ''
@@ -204,7 +216,9 @@ export class Management {
     }))
   }
   mailSettings(raw=false) {
-    const config = JSON.parse(this.db.prepare('SELECT config FROM mail_settings WHERE id=1').get()?.config || '{}')
+    const stored = JSON.parse(this.db.prepare('SELECT config FROM mail_settings WHERE id=1').get()?.config || '{}')
+    const config = {...stored,operatorEmails:emailAddresses(stored.operatorEmails ?? stored.operatorEmail,{label:'运营通知收件邮箱'})}
+    delete config.operatorEmail
     if (raw) return config
     const {password,...rest} = config
     return {...rest,hasPassword:!!password}
@@ -245,20 +259,26 @@ export class Management {
   }
   saveMailSettings(body, actor) {
     const previous = this.mailSettings(true)
-    const config = {enabled:body.enabled===true,host:String(body.host||'').trim(),port:Number(body.port||465),security:body.security||'TLS',username:String(body.username||'').trim(),password:body.password || previous.password || '',from:String(body.from||'').trim(),senderName:String(body.senderName||'沧烁授权中心').trim(),operatorEmail:String(body.operatorEmail||'').trim()}
+    const operatorEmails = emailAddresses(body.operatorEmails ?? body.operatorEmail ?? previous.operatorEmails,{label:'运营通知收件邮箱'})
+    const config = {enabled:body.enabled===true,host:String(body.host||'').trim(),port:Number(body.port||465),security:body.security||'TLS',username:String(body.username||'').trim(),password:body.password || previous.password || '',from:String(body.from||'').trim(),senderName:String(body.senderName||'沧烁授权中心').trim(),operatorEmails}
     if (!['TLS','STARTTLS'].includes(config.security) || !Number.isSafeInteger(config.port) || config.port<1 || config.port>65535) fail('SMTP 端口或加密方式不正确')
     if (config.host.length>253 || /[\s/]/.test(config.host) || Object.values(config).some(value=>typeof value==='string'&&(value.length>1000 || /[\r\n]/.test(value)))) fail('SMTP 配置格式不正确')
-    if (config.enabled) { text(config.host,'SMTP 服务器'); text(config.username,'邮箱账号'); text(config.password,'邮箱密码/授权码',1000); emailAddress(config.from); emailAddress(config.operatorEmail) }
+    if (config.enabled) { text(config.host,'SMTP 服务器'); text(config.username,'邮箱账号'); text(config.password,'邮箱密码/授权码',1000); emailAddress(config.from); if(!operatorEmails.length)fail('启用发信前请至少配置一个运营通知收件邮箱') }
     this.db.prepare('INSERT INTO mail_settings VALUES (1,?,?) ON CONFLICT(id) DO UPDATE SET config=excluded.config,updated_at=excluded.updated_at').run(JSON.stringify(config),stamp())
     this.store.audit(actor,'UPDATE_MAIL_SETTINGS','SMTP',{enabled:config.enabled})
     return this.mailSettings()
   }
   queueMail({key,projectId=null,event,recipient,subject,body}) {
-    this.db.prepare('INSERT OR IGNORE INTO mail_queue(id,dedupe_key,project_id,event,recipient,subject,body,next_attempt_at,created_at) VALUES (?,?,?,?,?,?,?,?,?)').run(randomUUID(),key,projectId,event,emailAddress(recipient),subject,body,stamp(),stamp())
+    const address=emailAddress(recipient)
+    this.db.prepare('INSERT OR IGNORE INTO mail_queue(id,dedupe_key,project_id,event,recipient,subject,body,next_attempt_at,created_at) VALUES (?,?,?,?,?,?,?,?,?)').run(randomUUID(),`${key}:${address.toLowerCase()}`,projectId,event,address,subject,body,stamp(),stamp())
   }
-  queueProjectMail(id,event,key,subject,body) {
+  queueProjectMail(id,event,key,subject,body,{operatorKey=key}={}) {
     const project = this.db.prepare('SELECT * FROM projects WHERE id=?').get(id), settings=this.mailSettings(true)
-    for (const recipient of new Set([project.notification_email,settings.operatorEmail].filter(Boolean))) this.queueMail({key:key+':'+recipient,projectId:id,event,recipient,subject,body})
+    // One address receives this event once even when it is both the project and operator recipient.
+    const recipients=new Map()
+    if(project.notification_email)recipients.set(project.notification_email.toLowerCase(),{address:project.notification_email,key:`project:${key}`,projectId:id})
+    for(const address of settings.operatorEmails)if(!recipients.has(address.toLowerCase()))recipients.set(address.toLowerCase(),{address,key:`operator:${operatorKey}`,projectId:null})
+    for(const target of recipients.values())this.queueMail({key:target.key,projectId:target.projectId,event,recipient:target.address,subject,body})
   }
   scheduleNotifications(at=Date.now()) {
     for (const project of this.db.prepare('SELECT * FROM projects').all()) {

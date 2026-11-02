@@ -47,7 +47,8 @@ export class Releases {
     return {productId,version}
   }
   notify(productId,version) {
-    for (const project of this.db.prepare('SELECT id FROM projects WHERE product_id=?').all(productId)) this.store.management.queueProjectMail(project.id,'RELEASE',`release:${productId}:${version}:${project.id}`,'软件正式版本发布',`软件已发布正式版 ${version}。请在客户端系统更新页面比较版本并选择更新内容。`)
+    const operatorKey=`release:${productId}:${version}`
+    for (const project of this.db.prepare('SELECT id FROM projects WHERE product_id=?').all(productId)) this.store.management.queueProjectMail(project.id,'RELEASE',`release:${productId}:${version}:${project.id}`,'软件正式版本发布',`软件已发布正式版 ${version}。请在客户端系统更新页面比较版本并选择更新内容。`,{operatorKey})
   }
   async sync(productId=DEFAULT_PRODUCT,force=false) {
     if (this.running.has(productId)) return this.running.get(productId)
