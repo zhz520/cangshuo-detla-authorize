@@ -117,8 +117,9 @@ export class Releases {
     for(const component of new Set(final.map(item=>item.component))) {
       const version=final.filter(item=>item.component===component).sort((a,b)=>compareVersions(b.version,a.version))[0].version
       if(body.componentVersions?.[component] && compareVersions(body.componentVersions[component],version)>=0)continue
-      const release=available.find(item=>item.version===version)
-      const asset=release.assets.find(asset=>asset.name===`cangshuo-${component}.zip`)
+      const catalog=this.db.prepare('SELECT assets FROM release_catalog WHERE product_id=? AND version=?').get(claims.productId,version)
+      if(!catalog)fail(`${version} 的正式版本目录不存在`,409)
+      const asset=JSON.parse(catalog.assets||'[]').find(asset=>asset.name===`cangshuo-${component}.zip`)
       if(!asset||!/^sha256:[a-f0-9]{64}$/.test(asset.digest||''))fail(`${version} 的 ${component} 尚未提供带校验值的正式更新包`,409)
       if(asset.size<=0||asset.size>500_000_000)fail('更新包大小不正确')
       packages.push({component,version,url:asset.url,downloadPath:'/api/client/artifact',sha256:asset.digest.slice(7),size:asset.size})

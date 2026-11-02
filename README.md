@@ -16,7 +16,7 @@
 
 软件页可配置各自 GitHub 仓库；不使用 GitHub 的软件可留空仓库和令牌，仍能正常登记项目、维护期、授权和商务金额，只是不启用自动版本检查。版本页检查正式 Releases，忽略草稿和预览版，使用语义版本比较；客户端列出比当前版本新的每个版本。更新项可标记为必须更新、配置依赖和付费模块。客户端可逐项勾选或取消非必要内容，必须更新、所选内容的依赖和付费授权由中心复核；这些条件不满足时不会生成安装计划。
 
-客户端的“查看发布说明”和版本页使用授权运营中心的公开说明页 `/public/release-notes/<软件编号>/<版本号>`，不会向客户暴露私有 GitHub 地址。反代需保留 `Host`、`X-Forwarded-Host` 与 `X-Forwarded-Proto`，也可配置 `AUTHORITY_PUBLIC_URL=https://授权域名` 固定对外链接。
+客户端的“查看发布说明”和版本页使用授权运营中心的公开说明页 `/public/release-notes/<软件编号>/<版本号>`，不会向客户暴露私有 GitHub 地址；客户端版本目录也不再返回仓库名和 GitHub 资产地址。反代需保留 `Host`、`X-Forwarded-Host` 与 `X-Forwarded-Proto`，也可配置 `AUTHORITY_PUBLIC_URL=https://授权域名` 固定对外链接。
 
 更新计划由中心签名，绑定客户、实例、版本、校验值和短期有效期。客户端宿主执行器验证后备份、安装并健康检查，失败回退。缺少 GitHub SHA-256 digest 或正式组件包时不能安装。数据库结构变更目前不自动执行，执行器仅接受 schemaVersion=1，详见客户端 `deploy/updater/README.md`。
 

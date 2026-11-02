@@ -44,6 +44,7 @@ test('operations HTTP routes support a complete isolated customer/project/licens
   assert.equal(notes.status,200);assert.match(notesHtml,/其他软件更新/);assert.match(notesHtml,/修复接口/);assert.doesNotMatch(notesHtml,/github\.com/i)
   const report=await call('/api/client/report','POST',{license:identity,version:'1.2.0'})
   assert.match(report.result.updates.releases[0].sourceUrl,/\/public\/release-notes\/other\/2\.0\.0$/)
+  assert.doesNotMatch(JSON.stringify(report.result.updates),/github\.com/i)
   await call('/api/releases','POST',{version:'2.0.0',channel:'stable',notes:'invalid link',sourceUrl:'not-url'},400)
   await call('/api/customers/http-customer','DELETE',undefined,409)
   await call('/api/no-such-route','GET',undefined,404)

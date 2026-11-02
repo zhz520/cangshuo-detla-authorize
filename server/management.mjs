@@ -180,9 +180,9 @@ export class Management {
     compareVersions(version,version)
     const product = this.db.prepare('SELECT * FROM products WHERE id=?').get(productId)
     if (!product) fail('软件不存在',404)
-    const releases = this.db.prepare("SELECT * FROM release_catalog WHERE product_id=? AND status='PUBLISHED' AND channel='stable'").all(productId).filter(row=>compareVersions(row.version,version)>0).sort((a,b)=>compareVersions(a.version,b.version)).map(row=>({version:row.version,notes:row.notes,sourceUrl:releaseNotesUrl(productId,row.version,publicBase),publishedAt:row.published_at,items:JSON.parse(row.items),assets:JSON.parse(row.assets)}))
+    const releases = this.db.prepare("SELECT * FROM release_catalog WHERE product_id=? AND status='PUBLISHED' AND channel='stable'").all(productId).filter(row=>compareVersions(row.version,version)>0).sort((a,b)=>compareVersions(a.version,b.version)).map(row=>({version:row.version,notes:row.notes,sourceUrl:releaseNotesUrl(productId,row.version,publicBase),publishedAt:row.published_at,items:JSON.parse(row.items)}))
     const all = this.db.prepare("SELECT version FROM release_catalog WHERE product_id=? AND status='PUBLISHED' AND channel='stable'").all(productId).sort((a,b)=>compareVersions(b.version,a.version))
-    return {currentVersion:version,latestVersion:all[0]?.version || null,updateAvailable:releases.length>0,checkedAt:product.checked_at,checkError:product.check_error,releases,repository:product.repository}
+    return {currentVersion:version,latestVersion:all[0]?.version || null,updateAvailable:releases.length>0,checkedAt:product.checked_at,checkError:product.check_error,releases}
   }
   mailSettings(raw=false) {
     const config = JSON.parse(this.db.prepare('SELECT config FROM mail_settings WHERE id=1').get()?.config || '{}')
