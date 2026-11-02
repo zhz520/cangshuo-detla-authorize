@@ -91,6 +91,11 @@ export class Releases {
     this.store.audit(actor,'UPDATE_RELEASE_ITEMS',productId+':'+version,{items:items.map(item=>item.id)})
     return {items}
   }
+  publicNotes(productId,version) {
+    const row=this.db.prepare("SELECT version,notes,published_at,items FROM release_catalog WHERE product_id=? AND version=? AND status='PUBLISHED' AND channel='stable'").get(productId,version)
+    if(!row)fail('发布说明不存在',404)
+    return {...row,items:JSON.parse(row.items)}
+  }
   plan(body) {
     const report=this.store.reportVersion(body.license,body.version), claims=JSON.parse(Buffer.from(report.project.payload,'base64url'))
     if(claims.status!=='ACTIVE'||Date.parse(claims.maintenanceUntil)<=Date.now())fail('项目维护期已到期或已暂停，请先续期',403)
@@ -106,8 +111,6 @@ export class Releases {
       changed=false
       for(const item of entries.filter(item=>chosen.has(item.key))) {
         for(const dependency of item.requires) {const key=item.version+':'+dependency;if(!chosen.has(key)){chosen.add(key);changed=true}}
-        // A compiled component is the smallest installable unit.
-        for(const related of entries.filter(value=>value.version===item.version&&value.component===item.component))if(!chosen.has(related.key)){chosen.add(related.key);changed=true}
       }
     }
     const final=entries.filter(item=>chosen.has(item.key)), packages=[]

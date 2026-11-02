@@ -3,6 +3,10 @@ import { fail, identifier, integer, text, timestamp, compareVersions } from './s
 
 export const DEFAULT_PRODUCT = 'detla'
 export const stamp = () => new Date().toISOString()
+const releaseNotesUrl = (productId, version, publicBase) => {
+  const target = `/public/release-notes/${encodeURIComponent(productId)}/${encodeURIComponent(version)}`
+  return publicBase ? new URL(target, publicBase).href : target
+}
 export const PAYMENT_METHODS = ['H5', 'JSAPI', 'NATIVE', 'APP']
 const WECHAT_PAY_FIELDS = [
   {key:'appId',label:'支付关联 AppID',type:'text',required:true},
@@ -172,11 +176,11 @@ export class Management {
     this.db.prepare("INSERT INTO modules(id,name,description,price_cents,term_days,status,min_version,product_id) VALUES (?,?,?,NULL,365,'DRAFT',?,?)").run(id,name,description,minVersion,productId)
     this.store.audit(actor,'CREATE_MODULE',id,{productId});return {id}
   }
-  clientUpdates(productId, version) {
+  clientUpdates(productId, version, publicBase = '') {
     compareVersions(version,version)
     const product = this.db.prepare('SELECT * FROM products WHERE id=?').get(productId)
     if (!product) fail('软件不存在',404)
-    const releases = this.db.prepare("SELECT * FROM release_catalog WHERE product_id=? AND status='PUBLISHED' AND channel='stable'").all(productId).filter(row=>compareVersions(row.version,version)>0).sort((a,b)=>compareVersions(a.version,b.version)).map(row=>({version:row.version,notes:row.notes,sourceUrl:row.source_url,publishedAt:row.published_at,items:JSON.parse(row.items),assets:JSON.parse(row.assets)}))
+    const releases = this.db.prepare("SELECT * FROM release_catalog WHERE product_id=? AND status='PUBLISHED' AND channel='stable'").all(productId).filter(row=>compareVersions(row.version,version)>0).sort((a,b)=>compareVersions(a.version,b.version)).map(row=>({version:row.version,notes:row.notes,sourceUrl:releaseNotesUrl(productId,row.version,publicBase),publishedAt:row.published_at,items:JSON.parse(row.items),assets:JSON.parse(row.assets)}))
     const all = this.db.prepare("SELECT version FROM release_catalog WHERE product_id=? AND status='PUBLISHED' AND channel='stable'").all(productId).sort((a,b)=>compareVersions(b.version,a.version))
     return {currentVersion:version,latestVersion:all[0]?.version || null,updateAvailable:releases.length>0,checkedAt:product.checked_at,checkError:product.check_error,releases,repository:product.repository}
   }

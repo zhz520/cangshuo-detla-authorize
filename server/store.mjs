@@ -322,5 +322,5 @@ export class AuthorityStore {
   }
   createRelease(body, actor) { return this.releaseService.create(body,actor) }
   publishRelease(version, actor) { return this.releaseService.publish(DEFAULT_PRODUCT,version,actor) }
-  publishedReleases(productId=DEFAULT_PRODUCT) { return this.db.prepare("SELECT version,channel,notes,source_url,published_at,items FROM release_catalog WHERE product_id=? AND status='PUBLISHED' AND channel='stable'").all(productId).sort((a,b)=>compareVersions(b.version,a.version)) }
+  publishedReleases(productId=DEFAULT_PRODUCT) { return this.db.prepare("SELECT version,channel,notes,published_at,items FROM release_catalog WHERE product_id=? AND status='PUBLISHED' AND channel='stable'").all(productId).sort((a,b)=>compareVersions(b.version,a.version)).map(row=>({...row,notesUrl:`/public/release-notes/${encodeURIComponent(productId)}/${encodeURIComponent(row.version)}`})) }
 }

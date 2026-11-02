@@ -9,6 +9,16 @@ import { Readable,Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 
 const equal = (a, b) => { const x = Buffer.from(String(a || '')), y = Buffer.from(String(b || '')); return x.length === y.length && timingSafeEqual(x, y) }
+const html = value => String(value ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;')
+const requestBaseUrl = request => {
+  if (process.env.AUTHORITY_PUBLIC_URL) return new URL(process.env.AUTHORITY_PUBLIC_URL).origin
+  const forwardedProto = String(request.headers['x-forwarded-proto'] || '').split(',', 1)[0].trim().toLowerCase()
+  const protocol = forwardedProto === 'https' ? 'https' : 'http'
+  const host = String(request.headers['x-forwarded-host'] || request.headers.host || '').split(',', 1)[0].trim()
+  if (!host || !/^[a-z0-9.:[\]-]+$/i.test(host)) return ''
+  return `${protocol}://${host}`
+}
+const releaseNotesPage = (productId, release) => `<main><p class="eyebrow">CANGSHUO · RELEASE NOTES</p><h1>软件正式版 ${html(release.version)}</h1><p class="meta">软件 ${html(productId)} · 发布于 ${html(release.published_at)}</p><section><h2>更新说明</h2><pre>${html(release.notes)}</pre></section><section><h2>更新内容</h2>${release.items.length ? `<ul>${release.items.map(item=>`<li><strong>${html(item.name)}</strong>${item.required?' <span class="tag">必要更新</span>':''}${item.description?`<p>${html(item.description)}</p>`:''}</li>`).join('')}</ul>` : '<p>此版本暂未登记可选更新内容。</p>'}</section><p class="foot">此页由授权运营中心提供。</p></main>`
 export function createAuthorityServer(store, { secureCookie = false, staticDirectory, allowedOrigins = [] } = {}) {
   const mailer = new Mailer(store)
   const attempts = new Map()
@@ -39,11 +49,18 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
         if (!body || typeof body !== 'object' || Array.isArray(body)) fail('请求内容须为对象')
       }
       if (route === '/health' && method === 'GET') return json({ ok: true, service: 'cangshuo-detla-authorize' })
+      let publicMatch = route.match(/^\/public\/release-notes\/([\w-]+)\/([^/]+)$/)
+      if (publicMatch && method === 'GET') {
+        const productId=publicMatch[1],version=decodeURIComponent(publicMatch[2]),release=store.releaseService.publicNotes(productId,version)
+        response.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'")
+        response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+        return response.end(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>正式版 ${html(release.version)} · 发布说明</title><style>:root{color-scheme:light}*{box-sizing:border-box}body{margin:0;background:#f4f6fa;color:#20293a;font:15px/1.75 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{width:min(860px,calc(100% - 32px));margin:42px auto;padding:clamp(24px,5vw,48px);background:#fff;border:1px solid #dfe4ec;border-radius:18px;box-shadow:0 16px 50px #26364b12}.eyebrow{color:#66758a;font-size:12px;letter-spacing:.14em}h1{margin:6px 0 8px;font-size:clamp(26px,5vw,38px)}h2{margin:28px 0 12px;font-size:19px}.meta{color:#69778c;margin:0 0 26px}pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:0;padding:20px;background:#f7f8fb;border-left:4px solid #2f65eb;border-radius:8px;font:inherit}ul{list-style:none;padding:0;margin:0;display:grid;gap:10px}li{padding:16px;border:1px solid #e1e6ef;border-radius:10px}li p{margin:5px 0 0;color:#66758a}.tag{display:inline-block;margin-left:8px;padding:1px 8px;border-radius:999px;background:#fff3d6;color:#8b5c00;font-size:12px}.foot{margin-top:32px;color:#8190a4;font-size:13px}@media(max-width:560px){main{margin:16px auto;border-radius:12px}}</style></head><body>${releaseNotesPage(productId,release)}</body></html>`)
+      }
       if (route === '/api/client/report' && method === 'POST') {
         const claims=store.reportVersion(body.license, body.version)
         store.management.updateNotification(claims.instanceId,body.updateResult)
         try { await store.releaseService.sync(JSON.parse(Buffer.from(claims.project.payload,'base64url')).productId) } catch {}
-        return json({...claims,updates:store.management.clientUpdates(JSON.parse(Buffer.from(claims.project.payload,'base64url')).productId,body.version)})
+        return json({...claims,updates:store.management.clientUpdates(JSON.parse(Buffer.from(claims.project.payload,'base64url')).productId,body.version,requestBaseUrl(request) || undefined)})
       }
       if(route==='/api/client/update-plan' && method==='POST')return json(store.releaseService.plan(body))
       if(route==='/api/client/artifact' && method==='POST') {

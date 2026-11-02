@@ -65,12 +65,12 @@ test('expiry reminders are deduplicated and do not send to other customers',()=>
 test('update plans lock required dependencies, validate packages and reject unpaid modules',()=>{
  const f=setup(),{store,instance}=f;try{
   const identity=store.management.identity(instance,'owner')
-  store.releaseService.create({version:'1.2.0',channel:'stable',notes:'test',sourceUrl:'https://github.com/zhz520/cangshuo-detla/releases/tag/v1.2.0',items:[{id:'security',name:'安全修复',component:'backend',required:true},{id:'admin_ui',name:'后台更新',component:'admin',requires:['security']}]},'owner')
+  store.releaseService.create({version:'1.2.0',channel:'stable',notes:'test',sourceUrl:'https://github.com/zhz520/cangshuo-detla/releases/tag/v1.2.0',items:[{id:'security',name:'安全修复',component:'backend',required:true},{id:'admin_ui',name:'后台更新',component:'admin',requires:['security']},{id:'reports',name:'可选报表',component:'admin'}]},'owner')
   store.releaseService.publish('detla','1.2.0','owner')
   assert.throws(()=>store.releaseService.plan({license:identity,version:'1.1.0',selection:['1.2.0:admin_ui']}),/校验值/)
   const assets=['backend','admin'].map(component=>({name:`cangshuo-${component}.zip`,url:`https://github.com/zhz520/cangshuo-detla/releases/download/v1.2.0/cangshuo-${component}.zip`,size:100,digest:'sha256:'+'a'.repeat(64)}))
   store.db.prepare('UPDATE release_catalog SET assets=?').run(JSON.stringify(assets))
-  let plan=store.releaseService.plan({license:identity,version:'1.1.0',selection:['1.2.0:admin_ui']});let claims=JSON.parse(Buffer.from(plan.payload,'base64url'));assert.equal(claims.packages.length,2);assert.deepEqual(claims.items.map(item=>item.id),['security','admin_ui'])
+  let plan=store.releaseService.plan({license:identity,version:'1.1.0',selection:['1.2.0:admin_ui']});let claims=JSON.parse(Buffer.from(plan.payload,'base64url'));assert.equal(claims.packages.length,2);assert.deepEqual(claims.items.map(item=>item.id),['security','admin_ui']);assert(!claims.items.some(item=>item.id==='reports'))
   store.releaseService.configureItems('detla','1.2.0',{items:[{id:'paid',name:'付费模块',component:'admin',featureId:'advanced_income_reports'}]},'owner')
   assert.throws(()=>store.releaseService.plan({license:identity,version:'1.1.0',selection:['1.2.0:paid']}),/购买/)
   assert.throws(()=>releaseItems([{id:'a',name:'A',component:'backend',requires:['b']},{id:'b',name:'B',component:'backend',requires:['a']}]),/循环/)

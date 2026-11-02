@@ -2,7 +2,7 @@ name: cangshuo-detla-authority
 services:
   authority:
     build: ..
-    image: cangshuo-detla-authority:0.4.0
+    image: cangshuo-detla-authority:0.4.1
     restart: unless-stopped
     environment:
       DATA_DIR: /app/data
@@ -10,6 +10,7 @@ services:
       HOST: 0.0.0.0
       PORT: 17441
       COOKIE_SECURE: "true"
+      AUTHORITY_PUBLIC_URL: https://auth.kk520yy.com
     ports:
       - 127.0.0.1:17441:17441
     volumes:
