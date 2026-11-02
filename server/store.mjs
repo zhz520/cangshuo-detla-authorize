@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { createHash, createPrivateKey, createPublicKey, randomBytes, randomUUID, scryptSync, sign, timingSafeEqual, verify } from 'node:crypto'
 import { mkdirSync, readFileSync, chmodSync, existsSync } from 'node:fs'
 import path from 'node:path'
-import { Management, DEFAULT_PRODUCT } from './management.mjs'
+import { Management, DEFAULT_PRODUCT, publicReleaseText } from './management.mjs'
 import { Releases } from './releases.mjs'
 
 export class HttpError extends Error { constructor(status, message) { super(message); this.status = status } }
@@ -322,5 +322,5 @@ export class AuthorityStore {
   }
   createRelease(body, actor) { return this.releaseService.create(body,actor) }
   publishRelease(version, actor) { return this.releaseService.publish(DEFAULT_PRODUCT,version,actor) }
-  publishedReleases(productId=DEFAULT_PRODUCT) { return this.db.prepare("SELECT version,channel,notes,published_at,items FROM release_catalog WHERE product_id=? AND status='PUBLISHED' AND channel='stable'").all(productId).sort((a,b)=>compareVersions(b.version,a.version)).map(row=>({...row,notesUrl:`/public/release-notes/${encodeURIComponent(productId)}/${encodeURIComponent(row.version)}`})) }
+  publishedReleases(productId=DEFAULT_PRODUCT) { return this.db.prepare("SELECT version,channel,notes,published_at,items FROM release_catalog WHERE product_id=? AND status='PUBLISHED' AND channel='stable'").all(productId).sort((a,b)=>compareVersions(b.version,a.version)).map(row=>({...row,notes:publicReleaseText(row.notes),items:JSON.parse(row.items).map(item=>({...item,description:publicReleaseText(item.description)})),notesUrl:`/public/release-notes/${encodeURIComponent(productId)}/${encodeURIComponent(row.version)}`})) }
 }
