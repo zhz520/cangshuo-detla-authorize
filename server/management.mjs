@@ -71,6 +71,7 @@ export class Management {
       this.db.prepare("INSERT OR IGNORE INTO modules(id,name,description,price_cents,term_days,status,min_version,product_id) VALUES (?,?,?,?,?,?,?,?)").run('official_wechat_notifications','公众号模板通知','公众号账号绑定及新订单、接单、订单完成、素材审核和提现审核模板通知。',10000,365,'ACTIVE','1.3.5',DEFAULT_PRODUCT)
       this.db.prepare("INSERT OR IGNORE INTO modules(id,name,description,price_cents,term_days,status,min_version,product_id) VALUES (?,?,?,?,?,?,?,?)").run('identity_verification','实名认证','用户实名资料提交、人工审核、状态回显与隐私删除。',2000,365,'ACTIVE','1.4.0',DEFAULT_PRODUCT)
       this.db.prepare("INSERT OR IGNORE INTO modules(id,name,description,price_cents,term_days,status,min_version,product_id) VALUES (?,?,?,?,?,?,?,?)").run('email_notifications','邮件通知','通过客户自有 SMTP 邮箱接收新订单、接单、订单完结、提现、售后和打手审核等重要通知。',5000,365,'ACTIVE','1.4.2',DEFAULT_PRODUCT)
+      this.db.prepare("INSERT OR IGNORE INTO modules(id,name,description,price_cents,term_days,status,min_version,product_id) VALUES (?,?,?,?,?,?,?,?)").run('player_directory_layouts','打手列表多布局','购买启用后可切换打手列表的图文卡片、详情列表和紧凑列表布局。',500,365,'ACTIVE','1.5.0',DEFAULT_PRODUCT)
       for (const instance of this.db.prepare('SELECT * FROM instances WHERE project_id IS NULL').all()) {
         const projectId = randomUUID()
         this.db.prepare('INSERT INTO projects(id,customer_id,product_id,name,maintenance_until,created_at) VALUES (?,?,?,?,?,?)').run(projectId,instance.customer_id,DEFAULT_PRODUCT,instance.name,instance.maintenance_until,stamp())
