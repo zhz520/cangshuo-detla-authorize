@@ -3,6 +3,9 @@ import { fail, identifier, integer, text, timestamp, compareVersions } from './s
 
 export const DEFAULT_PRODUCT = 'detla'
 export const stamp = () => new Date().toISOString()
+export const publicReleaseText = value => String(value ?? '')
+  .replace(/\[([^\]]+)\]\((?:https?:\/\/)?(?:[a-z0-9-]+\.)*github(?:usercontent)?\.com\/[^\s)]+\)/gi, '$1')
+  .replace(/(?:https?:\/\/)?(?:[a-z0-9-]+\.)*github(?:usercontent)?\.com\/[^\s<>\"')]+/gi, '[内部地址已隐藏]')
 const releaseNotesUrl = (productId, version, publicBase) => {
   const target = `/public/release-notes/${encodeURIComponent(productId)}/${encodeURIComponent(version)}`
   return publicBase ? new URL(target, publicBase).href : target
@@ -180,7 +183,7 @@ export class Management {
     compareVersions(version,version)
     const product = this.db.prepare('SELECT * FROM products WHERE id=?').get(productId)
     if (!product) fail('软件不存在',404)
-    const releases = this.db.prepare("SELECT * FROM release_catalog WHERE product_id=? AND status='PUBLISHED' AND channel='stable'").all(productId).filter(row=>compareVersions(row.version,version)>0).sort((a,b)=>compareVersions(a.version,b.version)).map(row=>({version:row.version,notes:row.notes,sourceUrl:releaseNotesUrl(productId,row.version,publicBase),publishedAt:row.published_at,items:JSON.parse(row.items)}))
+    const releases = this.db.prepare("SELECT * FROM release_catalog WHERE product_id=? AND status='PUBLISHED' AND channel='stable'").all(productId).filter(row=>compareVersions(row.version,version)>0).sort((a,b)=>compareVersions(a.version,b.version)).map(row=>({version:row.version,notes:publicReleaseText(row.notes),sourceUrl:releaseNotesUrl(productId,row.version,publicBase),publishedAt:row.published_at,items:JSON.parse(row.items).map(item=>({...item,description:publicReleaseText(item.description)}))}))
     const all = this.db.prepare("SELECT version FROM release_catalog WHERE product_id=? AND status='PUBLISHED' AND channel='stable'").all(productId).sort((a,b)=>compareVersions(b.version,a.version))
     return {currentVersion:version,latestVersion:all[0]?.version || null,updateAvailable:releases.length>0,checkedAt:product.checked_at,checkError:product.check_error,releases}
   }

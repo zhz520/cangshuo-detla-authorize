@@ -1,5 +1,5 @@
 import { compareVersions, fail, text } from './store.mjs'
-import { DEFAULT_PRODUCT, stamp } from './management.mjs'
+import { DEFAULT_PRODUCT, stamp, publicReleaseText } from './management.mjs'
 import { randomUUID,verify } from 'node:crypto'
 
 export function releaseItems(value) {
@@ -94,7 +94,7 @@ export class Releases {
   publicNotes(productId,version) {
     const row=this.db.prepare("SELECT version,notes,published_at,items FROM release_catalog WHERE product_id=? AND version=? AND status='PUBLISHED' AND channel='stable'").get(productId,version)
     if(!row)fail('发布说明不存在',404)
-    return {...row,items:JSON.parse(row.items)}
+    return {...row,notes:publicReleaseText(row.notes),items:JSON.parse(row.items).map(item=>({...item,description:publicReleaseText(item.description)}))}
   }
   plan(body) {
     const report=this.store.reportVersion(body.license,body.version), claims=JSON.parse(Buffer.from(report.project.payload,'base64url'))
