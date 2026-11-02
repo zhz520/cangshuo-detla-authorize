@@ -49,6 +49,7 @@ export function checkPassword(password, encoded) {
 }
 const digest = value => createHash('sha256').update(value).digest('hex')
 const now = () => new Date().toISOString()
+const day = 86400000
 
 export class AuthorityStore {
   constructor({ database, privateKey, ownerUsername, ownerPassword }) {
@@ -64,8 +65,8 @@ export class AuthorityStore {
       CREATE TABLE IF NOT EXISTS customers (id TEXT PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'ACTIVE', note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS instances (id TEXT PRIMARY KEY, customer_id TEXT NOT NULL REFERENCES customers(id), name TEXT NOT NULL, domain TEXT NOT NULL DEFAULT '', domains TEXT NOT NULL DEFAULT '[]', maintenance_until TEXT NOT NULL DEFAULT '', client_version TEXT NOT NULL DEFAULT '', last_seen_at TEXT, created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS modules (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL, price_cents INTEGER CHECK(price_cents>=0), term_days INTEGER NOT NULL, status TEXT NOT NULL, min_version TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS orders (id TEXT PRIMARY KEY, instance_id TEXT NOT NULL REFERENCES instances(id), module_id TEXT NOT NULL REFERENCES modules(id), amount_cents INTEGER NOT NULL, term_days INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'UNPAID', payment_reference TEXT, paid_at TEXT, granted_at TEXT, created_at TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS entitlements (instance_id TEXT NOT NULL REFERENCES instances(id), module_id TEXT NOT NULL REFERENCES modules(id), valid_from TEXT NOT NULL, valid_until TEXT, PRIMARY KEY(instance_id,module_id));
+      CREATE TABLE IF NOT EXISTS orders (id TEXT PRIMARY KEY, instance_id TEXT NOT NULL REFERENCES instances(id), module_id TEXT NOT NULL REFERENCES modules(id), amount_cents INTEGER NOT NULL, term_days INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'UNPAID', payment_reference TEXT, paid_at TEXT, granted_at TEXT, valid_from TEXT, valid_until TEXT, cancel_reason TEXT, cancelled_at TEXT, refund_reference TEXT, refunded_at TEXT, created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS entitlements (instance_id TEXT NOT NULL REFERENCES instances(id), module_id TEXT NOT NULL REFERENCES modules(id), valid_from TEXT NOT NULL, valid_until TEXT, enabled INTEGER NOT NULL DEFAULT 1, PRIMARY KEY(instance_id,module_id));
       CREATE TABLE IF NOT EXISTS licenses (id TEXT PRIMARY KEY, order_id TEXT NOT NULL UNIQUE REFERENCES orders(id), instance_id TEXT NOT NULL REFERENCES instances(id), issued_at TEXT NOT NULL, expires_at TEXT, envelope TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS releases (version TEXT PRIMARY KEY, channel TEXT NOT NULL, notes TEXT NOT NULL, source_url TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'DRAFT', created_at TEXT NOT NULL, published_at TEXT);
       CREATE TABLE IF NOT EXISTS plugins (id TEXT PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL, description TEXT NOT NULL, config_schema TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'ACTIVE', created_at TEXT NOT NULL);
@@ -75,6 +76,16 @@ export class AuthorityStore {
     if (!instanceColumns.has('domains')) this.db.exec("ALTER TABLE instances ADD COLUMN domains TEXT NOT NULL DEFAULT '[]'")
     if (!instanceColumns.has('maintenance_until')) this.db.exec("ALTER TABLE instances ADD COLUMN maintenance_until TEXT NOT NULL DEFAULT ''")
     if (!instanceColumns.has('last_seen_at')) this.db.exec('ALTER TABLE instances ADD COLUMN last_seen_at TEXT')
+    const orderColumns = new Set(this.db.prepare('PRAGMA table_info(orders)').all().map(column => column.name))
+    if (!orderColumns.has('valid_from')) this.db.exec('ALTER TABLE orders ADD COLUMN valid_from TEXT')
+    if (!orderColumns.has('valid_until')) this.db.exec('ALTER TABLE orders ADD COLUMN valid_until TEXT')
+    if (!orderColumns.has('cancel_reason')) this.db.exec('ALTER TABLE orders ADD COLUMN cancel_reason TEXT')
+    if (!orderColumns.has('cancelled_at')) this.db.exec('ALTER TABLE orders ADD COLUMN cancelled_at TEXT')
+    if (!orderColumns.has('refund_reference')) this.db.exec('ALTER TABLE orders ADD COLUMN refund_reference TEXT')
+    if (!orderColumns.has('refunded_at')) this.db.exec('ALTER TABLE orders ADD COLUMN refunded_at TEXT')
+    const entitlementColumns = new Set(this.db.prepare('PRAGMA table_info(entitlements)').all().map(column => column.name))
+    if (!entitlementColumns.has('enabled')) this.db.exec('ALTER TABLE entitlements ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1')
+    this.db.exec("UPDATE entitlements SET enabled=1 WHERE enabled IS NULL OR enabled NOT IN (0,1)")
     const fingerprint = digest(this.publicKey)
     const existing = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('signing_key')
     if (existing && existing.value !== fingerprint) throw new Error('签发密钥与数据库不匹配，拒绝自动更换签发身份')
@@ -141,7 +152,8 @@ export class AuthorityStore {
     return {
       customers: this.db.prepare('SELECT * FROM customers ORDER BY created_at DESC').all(),
       modules: this.db.prepare('SELECT * FROM modules ORDER BY id').all(),
-      orders: this.db.prepare('SELECT o.*,i.customer_id,c.name AS customer_name,m.name AS module_name FROM orders o JOIN instances i ON i.id=o.instance_id JOIN customers c ON c.id=i.customer_id JOIN modules m ON m.id=o.module_id ORDER BY o.created_at DESC').all(),
+      orders: this.db.prepare('SELECT o.*,i.customer_id,c.name AS customer_name,i.name AS instance_name,m.name AS module_name FROM orders o JOIN instances i ON i.id=o.instance_id JOIN customers c ON c.id=i.customer_id JOIN modules m ON m.id=o.module_id ORDER BY o.created_at DESC').all(),
+      entitlements: this.listEntitlements(),
       licenses: this.db.prepare('SELECT l.id,l.order_id,l.instance_id,l.issued_at,l.expires_at,i.customer_id,i.domains FROM licenses l JOIN instances i ON i.id=l.instance_id ORDER BY l.issued_at DESC').all().map(row => ({...row, domains: JSON.parse(row.domains || '[]')})),
       audit: this.db.prepare('SELECT * FROM audit ORDER BY id DESC LIMIT 200').all(),
       ...this.management.lists()
@@ -201,6 +213,115 @@ export class AuthorityStore {
       this.audit(actor, 'UPDATE_INSTANCE', id, { domains: allowedDomains, maintenanceUntil }); return { id }
     })
   }
+  listEntitlements(at = Date.now()) {
+    return this.db.prepare(`SELECT e.instance_id,e.module_id,e.valid_from,e.valid_until,e.enabled,
+      i.customer_id,i.name AS instance_name,i.maintenance_until,i.project_id,
+      c.name AS customer_name,m.name AS module_name,m.price_cents,m.term_days,m.status AS module_status
+      FROM entitlements e JOIN instances i ON i.id=e.instance_id JOIN customers c ON c.id=i.customer_id
+      JOIN modules m ON m.id=e.module_id ORDER BY i.created_at DESC,e.module_id`).all()
+      .map(row => this.entitlementView(row, at))
+  }
+  entitlementView(row, at = Date.now()) {
+    const validFrom = row.valid_from, maintenanceUntil = row.maintenance_until || null
+    const naturalUntil = row.valid_until || maintenanceUntil
+    const effectiveUntil = naturalUntil && maintenanceUntil ? new Date(Math.min(Date.parse(naturalUntil), Date.parse(maintenanceUntil))).toISOString() : naturalUntil
+    const enabled = Boolean(row.enabled)
+    const status = !enabled ? 'DISABLED' : Date.parse(validFrom) > at ? 'PENDING' : !effectiveUntil || Date.parse(effectiveUntil) <= at ? 'EXPIRED' : 'ACTIVE'
+    const remaining_days = effectiveUntil ? Math.max(0, Math.ceil((Date.parse(effectiveUntil) - at) / day)) : 0
+    return {...row, original_until: naturalUntil, valid_until: effectiveUntil, effective_until: effectiveUntil, enabled, price_cents: row.price_cents ?? null, term_days: row.term_days ?? 0, status, remaining_days}
+  }
+  currentEntitlements(instanceId, at = Date.now()) {
+    const instance = this.db.prepare('SELECT i.maintenance_until,p.maintenance_until AS project_until FROM instances i JOIN projects p ON p.id=i.project_id WHERE i.id=?').get(instanceId)
+    if (!instance) return []
+    const maintenanceUntil = instance.project_until || instance.maintenance_until
+    if (!maintenanceUntil || Date.parse(maintenanceUntil) <= at) return []
+    return this.db.prepare(`SELECT e.*,m.name AS module_name,m.price_cents,m.term_days FROM entitlements e
+      JOIN modules m ON m.id=e.module_id WHERE e.instance_id=? AND e.valid_from<=?
+      AND (e.valid_until IS NULL OR e.valid_until>?) ORDER BY e.module_id`).all(instanceId, new Date(at).toISOString(), new Date(at).toISOString())
+      .map(row => {
+        const until = row.valid_until ? new Date(Math.min(Date.parse(row.valid_until), Date.parse(maintenanceUntil))).toISOString() : maintenanceUntil
+        return {...row, valid_until: until, effectiveUntil: until, maintenance_until: maintenanceUntil}
+      }).filter(row => Date.parse(row.valid_until) > at)
+  }
+  activeEntitlements(instanceId, at = Date.now()) {
+    return this.currentEntitlements(instanceId, at).filter(row => Boolean(row.enabled))
+  }
+  openOrder(instanceId, moduleId) {
+    return this.db.prepare("SELECT id FROM orders WHERE instance_id=? AND module_id=? AND status IN ('UNPAID','PAID','MAINTENANCE') AND granted_at IS NULL LIMIT 1").get(instanceId, moduleId)
+  }
+  createEntitlement(body, actor) {
+    const instanceId = text(body.instanceId, '实例编号', 36), moduleId = identifier(body.moduleId, '模块编号')
+    const at = Date.now(), validFrom = timestamp(body.validFrom || now(), '生效时间')
+    if (Date.parse(validFrom) > at) fail('生效时间不能晚于当前时间')
+    const instance = this.db.prepare('SELECT i.*,p.product_id,p.maintenance_until AS project_until,p.status AS project_status,c.status AS customer_status FROM instances i JOIN projects p ON p.id=i.project_id JOIN customers c ON c.id=i.customer_id WHERE i.id=?').get(instanceId)
+    const module = this.db.prepare('SELECT * FROM modules WHERE id=?').get(moduleId)
+    if (!instance || instance.customer_status !== 'ACTIVE' || instance.project_status !== 'ACTIVE') fail('实例、项目或客户不存在/已停用', 404)
+    if (!module || module.status !== 'ACTIVE' || module.price_cents == null) fail('模块未上架或尚未定价')
+    if (module.product_id !== instance.product_id) fail('该模块不属于此实例的软件')
+    const maintenanceUntil = timestamp(instance.project_until || instance.maintenance_until, '维护期至')
+    let validUntil = body.validUntil ? timestamp(body.validUntil, '到期时间') : new Date(Math.min(Date.parse(validFrom) + module.term_days * day, Date.parse(maintenanceUntil))).toISOString()
+    if (Date.parse(validUntil) > Date.parse(maintenanceUntil)) fail('权益到期时间不能超过项目维护期')
+    if (Date.parse(validUntil) <= Date.parse(validFrom)) fail('到期时间必须晚于生效时间')
+    if (this.db.prepare('SELECT 1 FROM entitlements WHERE instance_id=? AND module_id=?').get(instanceId, moduleId)) fail('该实例已存在此功能权益', 409)
+    const enabled = body.enabled === undefined ? true : body.enabled
+    if (typeof enabled !== 'boolean') fail('开通状态须为布尔值')
+    return this.transaction(() => {
+      this.db.prepare('INSERT INTO entitlements(instance_id,module_id,valid_from,valid_until,enabled) VALUES (?,?,?,?,?)').run(instanceId, moduleId, validFrom, validUntil, enabled ? 1 : 0)
+      this.audit(actor, 'CREATE_ENTITLEMENT', `${instanceId}:${moduleId}`, {validFrom, validUntil, enabled})
+      const row = this.entitlementView(this.db.prepare(`SELECT e.*,i.customer_id,i.name AS instance_name,i.maintenance_until,i.project_id,c.name AS customer_name,m.name AS module_name,m.price_cents,m.term_days,m.status AS module_status FROM entitlements e JOIN instances i ON i.id=e.instance_id JOIN customers c ON c.id=i.customer_id JOIN modules m ON m.id=e.module_id WHERE e.instance_id=? AND e.module_id=?`).get(instanceId, moduleId))
+      return {...row, license: this.management.reconcileLicense(instanceId)}
+    })
+  }
+  updateEntitlement(instanceId, moduleId, body, actor) {
+    instanceId = text(instanceId, '实例编号', 36); moduleId = identifier(moduleId, '模块编号')
+    const existing = this.db.prepare('SELECT e.*,i.maintenance_until AS instance_until,p.maintenance_until AS project_until FROM entitlements e JOIN instances i ON i.id=e.instance_id JOIN projects p ON p.id=i.project_id WHERE e.instance_id=? AND e.module_id=?').get(instanceId, moduleId)
+    if (!existing) fail('功能权益不存在', 404)
+    const at = Date.now(), hasValidFrom = body.validFrom !== undefined, hasValidUntil = body.validUntil !== undefined
+    const validFrom = timestamp(body.validFrom ?? existing.valid_from, '生效时间')
+    if (hasValidFrom && Date.parse(validFrom) > at) fail('生效时间不能晚于当前时间')
+    const maintenanceUntil = existing.project_until || existing.instance_until
+    const validUntil = timestamp(body.validUntil ?? existing.valid_until, '到期时间')
+    const effectiveUntil = new Date(Math.min(Date.parse(validUntil), Date.parse(maintenanceUntil))).toISOString()
+    if (Date.parse(validUntil) > Date.parse(maintenanceUntil) && hasValidUntil && validUntil !== existing.valid_until) fail('新的权益到期时间不能超过项目维护期')
+    if (Date.parse(effectiveUntil) <= Date.parse(validFrom)) fail('当前有效到期时间必须晚于生效时间')
+    const enabled = body.enabled === undefined ? Boolean(existing.enabled) : body.enabled
+    if (typeof enabled !== 'boolean') fail('开通状态须为布尔值')
+    return this.transaction(() => {
+      this.db.prepare('UPDATE entitlements SET valid_from=?,valid_until=?,enabled=? WHERE instance_id=? AND module_id=?').run(validFrom, validUntil, enabled ? 1 : 0, instanceId, moduleId)
+      this.audit(actor, 'UPDATE_ENTITLEMENT', `${instanceId}:${moduleId}`, {validFrom, validUntil, enabled})
+      const row = this.listEntitlements().find(item => item.instance_id === instanceId && item.module_id === moduleId)
+      return {...row, license: this.management.reconcileLicense(instanceId)}
+    })
+  }
+  deleteEntitlement(instanceId, moduleId, actor) {
+    instanceId = text(instanceId, '实例编号', 36); moduleId = identifier(moduleId, '模块编号')
+    if (!this.db.prepare('SELECT 1 FROM entitlements WHERE instance_id=? AND module_id=?').get(instanceId, moduleId)) fail('功能权益不存在', 404)
+    return this.transaction(() => {
+      this.db.prepare('DELETE FROM entitlements WHERE instance_id=? AND module_id=?').run(instanceId, moduleId)
+      this.audit(actor, 'DELETE_ENTITLEMENT', `${instanceId}:${moduleId}`)
+      return {instanceId, moduleId, license: this.management.reconcileLicense(instanceId)}
+    })
+  }
+  orderPreview(instanceIdValue, moduleIdValue, at = Date.now()) {
+    const instanceId = text(instanceIdValue, '实例编号', 36), moduleId = identifier(moduleIdValue, '模块编号')
+    const instance = this.db.prepare('SELECT i.*,p.product_id,p.maintenance_until AS project_until,p.status AS project_status,c.status AS customer_status FROM instances i JOIN projects p ON p.id=i.project_id JOIN customers c ON c.id=i.customer_id WHERE i.id=?').get(instanceId)
+    const module = this.db.prepare('SELECT * FROM modules WHERE id=?').get(moduleId)
+    if (!instance || instance.customer_status !== 'ACTIVE' || instance.project_status !== 'ACTIVE') fail('实例、项目或客户不存在/已停用', 404)
+    if (!module || module.status !== 'ACTIVE' || module.price_cents == null) fail('模块尚未定价上架')
+    if (module.product_id !== instance.product_id) fail('该模块不属于此项目的软件')
+    const maintenanceUntil = instance.project_until || instance.maintenance_until
+    if (!maintenanceUntil || Date.parse(maintenanceUntil) <= at) fail('请先设置有效的项目维护期', 409)
+    const openOrder = this.openOrder(instanceId, moduleId)
+    if (openOrder) fail('该实例已有此功能的未完成订单（待收款、已收款未签发或维护期接入），请先完成或作废现有订单', 409)
+    const entitlement = this.db.prepare('SELECT * FROM entitlements WHERE instance_id=? AND module_id=?').get(instanceId, moduleId)
+    const renewal = Boolean(entitlement?.valid_from && Date.parse(entitlement.valid_from) <= at && entitlement.valid_until && Date.parse(entitlement.valid_until) > at)
+    if (entitlement && !entitlement.valid_until) fail('该实例已有此模块的永久授权，请先编辑为明确到期时间', 409)
+    const base = renewal ? Math.min(Date.parse(entitlement.valid_until), Date.parse(maintenanceUntil)) : at
+    const validUntil = new Date(Math.min(base + module.term_days * day, Date.parse(maintenanceUntil))).toISOString()
+    const addedDays = Math.max(0, Math.ceil((Date.parse(validUntil) - base) / day))
+    if (addedDays <= 0) fail('项目维护期已无可分配的新增权益天数', 409)
+    return { priceCents: module.price_cents, termDays: module.term_days, validFrom: renewal ? entitlement.valid_until : new Date(at).toISOString(), validUntil, currentExpiry: renewal ? entitlement.valid_until : null, newExpiry: validUntil, days: addedDays, addDays: addedDays, totalRemainingDays: Math.max(0, Math.ceil((Date.parse(validUntil) - at) / day)), renewal, maintenanceUntil }
+  }
   updateModule(id, body, actor) {
     const existing=this.db.prepare('SELECT * FROM modules WHERE id=?').get(id)
     if (!existing) fail('模块不存在', 404)
@@ -223,37 +344,62 @@ export class AuthorityStore {
   }
   createOrder(body, actor) {
     const instanceId = text(body.instanceId, '实例编号', 36), moduleId = identifier(body.moduleId, '模块编号')
-    const instance = this.db.prepare('SELECT i.*,c.status,p.product_id FROM instances i JOIN customers c ON c.id=i.customer_id JOIN projects p ON p.id=i.project_id WHERE i.id=?').get(instanceId)
+    const instance = this.db.prepare('SELECT i.*,c.status,p.product_id,p.maintenance_until AS project_until FROM instances i JOIN customers c ON c.id=i.customer_id JOIN projects p ON p.id=i.project_id WHERE i.id=?').get(instanceId)
     const module = this.db.prepare('SELECT * FROM modules WHERE id=?').get(moduleId)
     if (!instance || instance.status !== 'ACTIVE') fail('实例或客户不存在/已停用')
-    if (!module || module.status !== 'ACTIVE' || module.price_cents == null) fail('模块尚未定价上架')
-    if (module.product_id !== instance.product_id) fail('该模块不属于此项目的软件')
+    const preview = this.orderPreview(instanceId, moduleId)
     if (instance.client_version && compareVersions(instance.client_version, module.min_version) < 0) fail(`此模块要求客户端 ${module.min_version} 或更新版本，请先升级客户系统`, 409)
-    if (!instance.maintenance_until || Date.parse(instance.maintenance_until) <= Date.now()) fail('请先设置有效的维护期，维护期是授权到期时间', 409)
-    if (this.db.prepare("SELECT id FROM orders WHERE instance_id=? AND module_id=? AND status='UNPAID'").get(instanceId, moduleId)) fail('该实例已有此模块的待收款订单', 409)
-    const entitlement = this.db.prepare('SELECT valid_until FROM entitlements WHERE instance_id=? AND module_id=?').get(instanceId, moduleId)
-    if (entitlement && entitlement.valid_until == null) fail('该实例已有此模块的永久授权，无需重复购买', 409)
+    if (this.openOrder(instanceId, moduleId)) fail('该实例已有此功能的未完成订单（待收款、已收款未签发或维护期接入），请先完成或作废现有订单', 409)
+    if (preview.days <= 0) fail('项目维护期已没有可分配的权益天数', 409)
     const id = randomUUID()
-    return this.transaction(() => { this.db.prepare('INSERT INTO orders(id,instance_id,module_id,amount_cents,term_days,created_at) VALUES (?,?,?,?,?,?)').run(id, instanceId, moduleId, module.price_cents, module.term_days, now()); this.audit(actor, 'CREATE_ORDER', id, { amountCents: module.price_cents }); return { id } })
+    const createdAt = now()
+    return this.transaction(() => { this.db.prepare('INSERT INTO orders(id,instance_id,module_id,amount_cents,term_days,valid_from,valid_until,created_at) VALUES (?,?,?,?,?,?,?,?)').run(id, instanceId, moduleId, preview.priceCents, preview.termDays, preview.validFrom, preview.validUntil, createdAt); this.audit(actor, 'CREATE_ORDER', id, { amountCents: preview.priceCents, validFrom: preview.validFrom, validUntil: preview.validUntil, renewal: preview.renewal }); return { id, ...preview } })
   }
   markPaid(id, body, actor) {
     const reference = text(body.reference, '收款核对凭据', 200)
     return this.transaction(() => {
-      const order = this.db.prepare('SELECT * FROM orders WHERE id=?').get(id)
+      const order = this.db.prepare('SELECT o.*,i.maintenance_until AS instance_until,p.maintenance_until AS project_until FROM orders o JOIN instances i ON i.id=o.instance_id JOIN projects p ON p.id=i.project_id WHERE o.id=?').get(id)
       if (!order) fail('订单不存在', 404)
       if (order.status === 'PAID') return { id }
       if (order.status !== 'UNPAID') fail('订单状态不支持确认收款', 409)
+      this.validateOrderQuote(order)
       this.db.prepare("UPDATE orders SET status='PAID',payment_reference=?,paid_at=? WHERE id=?").run(reference, now(), id)
       this.audit(actor, 'CONFIRM_MANUAL_PAYMENT', id, { amountCents: order.amount_cents, reference }); return { id }
+    })
+  }
+  validateOrderQuote(order, at = Date.now()) {
+    if (!order.valid_from || !order.valid_until) fail('订单缺少有效报价快照，请作废后重新下单', 409)
+    const validFrom = timestamp(order.valid_from, '订单生效时间')
+    const validUntil = timestamp(order.valid_until, '订单到期时间')
+    if (Date.parse(validUntil) <= Date.parse(validFrom)) fail('订单报价区间不正确，请作废后重新下单', 409)
+    if (Date.parse(validUntil) <= at) fail('订单报价已超过到期时间，请作废后重新下单', 409)
+    const maintenanceUntil = timestamp(order.project_until || order.instance_until, '维护期至')
+    if (Date.parse(maintenanceUntil) < Date.parse(validUntil)) fail('项目维护期已早于订单到期时间，请重新报价后再收款或签发', 409)
+    return { validFrom, validUntil, maintenanceUntil }
+  }
+  cancelOrder(id, body, actor) {
+    const reason = text(body.reason, '作废原因', 200)
+    return this.transaction(() => {
+      const order = this.db.prepare('SELECT * FROM orders WHERE id=?').get(id)
+      if (!order) fail('订单不存在', 404)
+      if (order.status === 'CANCELLED') return { id, status: 'CANCELLED' }
+      if (order.granted_at) fail('已签发授权的订单不能作废', 409)
+      if (!['UNPAID','PAID','MAINTENANCE'].includes(order.status)) fail('订单状态不支持作废', 409)
+      const refundReference = order.status === 'PAID' ? text(body.refundReference, '退款凭据', 200) : null
+      const at = now()
+      this.db.prepare("UPDATE orders SET status='CANCELLED',cancel_reason=?,cancelled_at=?,refund_reference=?,refunded_at=? WHERE id=?").run(reason, at, refundReference, refundReference ? at : null, id)
+      this.audit(actor, 'CANCEL_ORDER', id, { reason, amountCents: order.amount_cents, previousStatus: order.status, refundReference })
+      return { id, status: 'CANCELLED' }
     })
   }
   grantMaintenance(id, body, actor) {
     const note = text(body.note, '维护期接入说明', 200)
     return this.transaction(() => {
-      const order = this.db.prepare('SELECT * FROM orders WHERE id=?').get(id)
+      const order = this.db.prepare('SELECT o.*,i.maintenance_until AS instance_until,p.maintenance_until AS project_until FROM orders o JOIN instances i ON i.id=o.instance_id JOIN projects p ON p.id=i.project_id WHERE o.id=?').get(id)
       if (!order) fail('订单不存在', 404)
       if (order.status === 'MAINTENANCE') return { id }
       if (order.status !== 'UNPAID') fail('只有待确认订单可以登记维护期接入', 409)
+      this.validateOrderQuote(order)
       this.db.prepare("UPDATE orders SET status='MAINTENANCE',payment_reference=? WHERE id=?").run(note, id)
       this.audit(actor, 'GRANT_MAINTENANCE_ACCESS', id, { amountCents: order.amount_cents, note }); return { id }
     })
@@ -262,22 +408,26 @@ export class AuthorityStore {
     return this.transaction(() => {
       const duplicate = this.db.prepare('SELECT id,envelope FROM licenses WHERE order_id=?').get(id)
       if (duplicate) return { id: duplicate.id, envelope: JSON.parse(duplicate.envelope) }
-      const order = this.db.prepare('SELECT o.*,i.customer_id,i.domains,i.maintenance_until,c.status AS customer_status FROM orders o JOIN instances i ON i.id=o.instance_id JOIN customers c ON c.id=i.customer_id WHERE o.id=?').get(id)
+      const order = this.db.prepare('SELECT o.*,i.customer_id,i.domains,i.maintenance_until,p.maintenance_until AS project_until,c.status AS customer_status FROM orders o JOIN instances i ON i.id=o.instance_id JOIN projects p ON p.id=i.project_id JOIN customers c ON c.id=i.customer_id WHERE o.id=?').get(id)
       if (!order || !['PAID','MAINTENANCE'].includes(order.status) || order.customer_status !== 'ACTIVE') fail('只能为已收款或维护期接入的有效客户订单签发授权', 409)
-      const maintenanceUntil = timestamp(order.maintenance_until, '维护期至')
-      if (Date.parse(maintenanceUntil) <= Date.now()) fail('维护期已经结束，请先延长维护期并重新签发', 409)
+      const {validFrom, validUntil: snappedUntil, maintenanceUntil} = this.validateOrderQuote({...order, instance_until: order.maintenance_until})
+      const existingUntil = this.db.prepare('SELECT valid_until FROM entitlements WHERE instance_id=? AND module_id=?').get(order.instance_id,order.module_id)?.valid_until
+      const protectedUntil = Math.max(Date.parse(snappedUntil), existingUntil ? Date.parse(existingUntil) : 0)
+      if (protectedUntil > Date.parse(maintenanceUntil)) fail('现有权益到期时间晚于当前维护期，请联系维护人员核对', 409)
+      const until = new Date(protectedUntil).toISOString()
       const last = this.db.prepare('SELECT issued_at FROM licenses WHERE instance_id=? ORDER BY issued_at DESC LIMIT 1').get(order.instance_id)
       const issuedAt = new Date(Math.max(Date.now(), last ? Date.parse(last.issued_at) + 1 : 0)).toISOString()
-      // Commercial authorization follows the customer's maintenance period exactly.
-      const until = maintenanceUntil
-      this.db.prepare('INSERT INTO entitlements VALUES (?,?,?,?) ON CONFLICT(instance_id,module_id) DO UPDATE SET valid_until=excluded.valid_until').run(order.instance_id, order.module_id, issuedAt, until)
-      const grants = this.db.prepare('SELECT * FROM entitlements WHERE instance_id=? AND (valid_until IS NULL OR valid_until>?) ORDER BY module_id').all(order.instance_id, issuedAt)
+      this.db.prepare('INSERT INTO entitlements(instance_id,module_id,valid_from,valid_until,enabled) VALUES (?,?,?,?,1) ON CONFLICT(instance_id,module_id) DO UPDATE SET valid_from=CASE WHEN entitlements.valid_from>? THEN ? ELSE entitlements.valid_from END,valid_until=excluded.valid_until,enabled=1').run(order.instance_id, order.module_id, validFrom, until, issuedAt, issuedAt)
+      const grants = this.activeEntitlements(order.instance_id, Date.now())
       const licenseId = randomUUID(), expiresAt = maintenanceUntil, allowedDomains = JSON.parse(order.domains)
-      const claims = { licenseId, customerId: order.customer_id, instanceId: order.instance_id, issuedAt, notBefore: issuedAt, expiresAt, features: grants.map(grant => grant.module_id), featureExpiresAt: Object.fromEntries(grants.map(grant => [grant.module_id, grant.valid_until])), allowedDomains }
+      const features = grants.length ? grants.map(grant => grant.module_id) : ['core_platform']
+      const featureExpiresAt = grants.length ? Object.fromEntries(grants.map(grant => [grant.module_id, grant.valid_until])) : {core_platform: expiresAt}
+      const claims = { licenseId, customerId: order.customer_id, instanceId: order.instance_id, issuedAt, notBefore: issuedAt, expiresAt, features, featureExpiresAt, allowedDomains }
       const payload = Buffer.from(JSON.stringify(claims)).toString('base64url')
       const envelope = { format: 'delta-license-v1', payload, signature: sign(null, Buffer.from('delta-license-v1.' + payload), this.key).toString('base64url') }
       this.db.prepare('INSERT INTO licenses VALUES (?,?,?,?,?,?)').run(licenseId, id, order.instance_id, issuedAt, expiresAt, JSON.stringify(envelope))
       this.db.prepare('UPDATE orders SET granted_at=? WHERE id=?').run(issuedAt, id)
+      this.management.reconcileLicense(order.instance_id)
       this.audit(actor, 'ISSUE_LICENSE', licenseId, { orderId: id, instanceId: order.instance_id, features: claims.features, expiresAt, allowedDomains })
       return { id: licenseId, envelope }
     })

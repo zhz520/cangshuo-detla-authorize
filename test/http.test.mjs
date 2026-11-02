@@ -30,10 +30,36 @@ test('operations HTTP routes support a complete isolated customer/project/licens
   await call('/api/modules/module_crud','PUT',{name:'增删改查测试已修改',description:'修改后',minVersion:'1.3.0',priceCents:20000,status:'DRAFT'})
   await call('/api/modules/module_crud','DELETE')
   assert(!store.lists().modules.some(row=>row.id==='module_crud'))
+  const preview=(await call('/api/orders/preview?instanceId='+encodeURIComponent(id)+'&moduleId=http_module')).result
+  assert.equal(preview.priceCents,100);assert.equal(preview.termDays,365);assert.equal(preview.renewal,false);assert.equal(preview.days,365)
+  const cancelled=(await call('/api/orders','POST',{instanceId:id,moduleId:'http_module'},201)).result
+  await call('/api/orders/'+cancelled.id+'/cancel','POST',{reason:'interface-test'})
+  assert.equal(store.lists().orders.find(row=>row.id===cancelled.id).status,'CANCELLED')
   const order=(await call('/api/orders','POST',{instanceId:id,moduleId:'http_module'},201)).result
   await call('/api/orders/'+order.id+'/paid','POST',{reference:'isolated-test'})
   const license=(await call('/api/orders/'+order.id+'/issue','POST',{})).result
   await call('/api/licenses/'+license.id)
+  let entitlements=(await call('/api/entitlements')).result
+  assert.equal(entitlements.length,1);assert.equal(entitlements[0].module_name,'测试功能');assert.equal(entitlements[0].enabled,true)
+  const disabled=(await call('/api/entitlements/'+id+'/http_module','PUT',{enabled:false})).result
+  assert.equal(disabled.enabled,false)
+  const disabledReport=(await call('/api/client/report','POST',{license:identity,version:'1.2.0'})).result
+  const disabledClaims=JSON.parse(Buffer.from(disabledReport.license.payload,'base64url')),disabledProject=JSON.parse(Buffer.from(disabledReport.project.payload,'base64url'))
+  assert.deepEqual(disabledClaims.features,['core_platform']);assert.equal(disabledClaims.featureStartsAt,undefined);assert.equal(disabledProject.featureEnabled.http_module,false)
+  assert(disabledProject.featureStartsAt.http_module);assert(disabledProject.featureExpiresAt.http_module)
+  await call('/api/entitlements/'+id+'/http_module/renew','POST',{},404)
+  const renewalQuote=(await call('/api/orders/preview?instanceId='+encodeURIComponent(id)+'&moduleId=http_module')).result
+  assert.equal(renewalQuote.renewal,true)
+  const renewalOrder=(await call('/api/orders','POST',{instanceId:id,moduleId:'http_module'},201)).result
+  await call('/api/orders/'+renewalOrder.id+'/paid','POST',{reference:'renewal-test'})
+  await call('/api/orders/'+renewalOrder.id+'/issue','POST',{})
+  entitlements=(await call('/api/entitlements')).result;assert.equal(entitlements[0].enabled,true)
+  await call('/api/entitlements/'+id+'/http_module','DELETE')
+  entitlements=(await call('/api/entitlements')).result;assert.equal(entitlements.length,0)
+  const manualFrom=new Date().toISOString(),manualUntil=new Date(Date.now()+30*86400000).toISOString()
+  await call('/api/entitlements','POST',{instanceId:id,moduleId:'http_module',validFrom:manualFrom,validUntil:manualUntil,enabled:true},201)
+  await call('/api/entitlements/'+id+'/http_module','PUT',{enabled:false,validFrom:manualFrom,validUntil:manualUntil})
+  await call('/api/entitlements/'+id+'/http_module','DELETE')
   await call('/api/payments/wechat_pay','PUT',{enabled:false,methods:['H5'],config:{}})
   const mailSettings=(await call('/api/mail/settings','PUT',{enabled:true,host:'smtp.example.com',port:465,security:'TLS',username:'operator@example.com',password:'TEST-ONLY-NOT-REAL',from:'operator@example.com',operatorEmails:['operator@example.com','second-operator@example.com','OPERATOR@example.com']})).result
   assert.deepEqual(mailSettings.operatorEmails,['operator@example.com','second-operator@example.com'])

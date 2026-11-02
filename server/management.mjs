@@ -162,25 +162,35 @@ export class Management {
   reconcileLicense(instanceId) {
     const instance = this.db.prepare('SELECT i.*,p.maintenance_until AS until_at FROM instances i JOIN projects p ON p.id=i.project_id WHERE i.id=?').get(instanceId)
     if (!instance || !Number.isFinite(Date.parse(instance.until_at)) || Date.parse(instance.until_at)<=Date.now()) return null
-    const entitlements = this.db.prepare('SELECT * FROM entitlements WHERE instance_id=? ORDER BY module_id').all(instanceId)
-    if (!entitlements.length) return null
-    const latest = this.db.prepare('SELECT envelope FROM maintenance_licenses WHERE instance_id=?').get(instanceId)?.envelope || this.db.prepare('SELECT envelope FROM licenses WHERE instance_id=? ORDER BY issued_at DESC LIMIT 1').get(instanceId)?.envelope
-    const oldClaims = latest ? JSON.parse(Buffer.from(JSON.parse(latest).payload,'base64url')) : null
+    const grants = this.store.activeEntitlements(instanceId)
     const allowedDomains = JSON.parse(instance.domains)
-    if (oldClaims?.expiresAt===instance.until_at && JSON.stringify(oldClaims.allowedDomains)===JSON.stringify(allowedDomains) && JSON.stringify(oldClaims.features)===JSON.stringify(entitlements.map(item=>item.module_id))) return JSON.parse(latest)
+    const previous = this.db.prepare('SELECT envelope FROM maintenance_licenses WHERE instance_id=?').get(instanceId)?.envelope
+    const oldEnvelope = previous ? JSON.parse(previous) : null
+    const oldClaims = oldEnvelope ? JSON.parse(Buffer.from(oldEnvelope.payload,'base64url')) : null
     const issuedAt = new Date(Math.max(Date.now(), oldClaims ? Date.parse(oldClaims.issuedAt)+1 : 0)).toISOString()
-    const envelope = this.signed('delta-license-v1',{licenseId:randomUUID(),customerId:instance.customer_id,instanceId,issuedAt,notBefore:issuedAt,expiresAt:instance.until_at,features:entitlements.map(row=>row.module_id),featureExpiresAt:Object.fromEntries(entitlements.map(row=>[row.module_id,instance.until_at])),allowedDomains})
-    this.db.prepare('UPDATE entitlements SET valid_until=? WHERE instance_id=?').run(instance.until_at,instanceId)
+    const features = grants.length ? grants.map(row=>row.module_id) : ['core_platform']
+    const featureExpiresAt = grants.length ? Object.fromEntries(grants.map(row=>[row.module_id,row.valid_until])) : {core_platform:instance.until_at}
+    if (oldClaims?.expiresAt===instance.until_at && JSON.stringify(oldClaims.allowedDomains)===JSON.stringify(allowedDomains) && JSON.stringify(oldClaims.features)===JSON.stringify(features) && JSON.stringify(oldClaims.featureExpiresAt)===JSON.stringify(featureExpiresAt)) return oldEnvelope
+    const envelope = this.signed('delta-license-v1',{licenseId:randomUUID(),customerId:instance.customer_id,instanceId,issuedAt,notBefore:issuedAt,expiresAt:instance.until_at,features,featureExpiresAt,allowedDomains})
     this.db.prepare('INSERT INTO maintenance_licenses VALUES (?,?,?) ON CONFLICT(instance_id) DO UPDATE SET envelope=excluded.envelope,updated_at=excluded.updated_at').run(instanceId,JSON.stringify(envelope),stamp())
-    this.store.audit('system','REISSUE_MAINTENANCE_LICENSE',instanceId,{expiresAt:instance.until_at})
+    this.store.audit('system','REISSUE_MAINTENANCE_LICENSE',instanceId,{expiresAt:instance.until_at,features})
     return envelope
   }
   clientResponse(instanceId, version) {
     const instance = this.db.prepare('SELECT i.*,p.product_id,p.maintenance_until AS until_at,p.pause_policy,p.status,p.payment_provider,p.payment_methods,pay.enabled AS payment_enabled,pay.methods AS provider_methods FROM instances i JOIN projects p ON p.id=i.project_id LEFT JOIN payment_providers pay ON pay.id=p.payment_provider WHERE i.id=?').get(instanceId)
     const methods=JSON.parse(instance.payment_methods||'[]').filter(method=>JSON.parse(instance.provider_methods||'[]').includes(method))
     const payment = instance.payment_provider && instance.payment_enabled === 1 && methods.length ? {provider:instance.payment_provider,methods} : null
-    const project = this.signed('cangshuo-project-v1',{customerId:instance.customer_id,projectId:instance.project_id,productId:instance.product_id,instanceId,issuedAt:stamp(),maintenanceUntil:instance.until_at,status:instance.status,pausePolicy:instance.pause_policy,allowedDomains:JSON.parse(instance.domains),payment})
-    return {project,license:this.reconcileLicense(instanceId),updates:this.clientUpdates(instance.product_id,version)}
+    const grants = this.store.currentEntitlements(instanceId)
+    const current = new Map(grants.map(row=>[row.module_id,Boolean(row.enabled)]))
+    const featureIds=new Set(this.db.prepare('SELECT id FROM modules WHERE product_id=? AND price_cents IS NOT NULL').all(instance.product_id).map(row=>row.id))
+    for(const row of grants)featureIds.add(row.module_id)
+    const featureEnabled = Object.fromEntries([...featureIds].sort().map(id=>[id,current.get(id)===true]))
+    const featureStartsAt = Object.fromEntries(grants.map(row=>[row.module_id,row.valid_from]))
+    const featureExpiresAt = Object.fromEntries(grants.map(row=>[row.module_id,row.valid_until]))
+    const license=this.reconcileLicense(instanceId)
+    const licenseId=license?JSON.parse(Buffer.from(license.payload,'base64url')).licenseId:null
+    const project = this.signed('cangshuo-project-v1',{customerId:instance.customer_id,projectId:instance.project_id,productId:instance.product_id,instanceId,licenseId,issuedAt:stamp(),maintenanceUntil:instance.until_at,status:instance.status,pausePolicy:instance.pause_policy,allowedDomains:JSON.parse(instance.domains),payment,featureEnabled,featureStartsAt,featureExpiresAt})
+    return {project,license,updates:this.clientUpdates(instance.product_id,version)}
   }
   identity(instanceId,actor) {
     const row=this.db.prepare('SELECT * FROM instances WHERE id=?').get(instanceId);if(!row)fail('实例不存在',404)

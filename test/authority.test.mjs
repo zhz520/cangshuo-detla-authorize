@@ -25,21 +25,26 @@ test('orders require a configured price, a compatible instance and payment befor
  assert.equal(claims.customerId,'interop742');assert.equal(claims.instanceId,id);assert.deepEqual(claims.features,['advanced_income_reports'])
  assert.deepEqual(claims.allowedDomains,['jaxapi.kkimg.top','jax.kkimg.top'])
  assert.equal(claims.expiresAt,store.lists().instances[0].maintenance_until)
- assert.equal(claims.featureExpiresAt.advanced_income_reports,claims.expiresAt)
+ assert.equal(claims.featureExpiresAt.advanced_income_reports,store.lists().orders.find(row=>row.id===order.id).valid_until)
+ assert.equal(claims.featureStartsAt,undefined)
+ const response=store.management.clientResponse(id,'1.1.0'),project=JSON.parse(Buffer.from(response.project.payload,'base64url')),responseClaims=JSON.parse(Buffer.from(response.license.payload,'base64url'))
+ assert.equal(project.featureStartsAt.advanced_income_reports,store.listEntitlements().find(row=>row.instance_id===id).valid_from)
+ assert.equal(project.featureExpiresAt.advanced_income_reports,store.listEntitlements().find(row=>row.instance_id===id).valid_until)
+ assert.equal(project.licenseId,responseClaims.licenseId)
  assert(verify(null,Buffer.from('delta-license-v1.'+issued.envelope.payload),store.publicKey,Buffer.from(issued.envelope.signature,'base64url')))
  assert.deepEqual(store.issue(order.id,'owner'),issued);assert.equal(store.lists().licenses.length,1)
  const altered={...claims,customerId:'other'};assert(!verify(null,Buffer.from('delta-license-v1.'+Buffer.from(JSON.stringify(altered)).toString('base64url')),store.publicKey,Buffer.from(issued.envelope.signature,'base64url')))
  if(process.env.AUTHORITY_INTEROP_DIR){const directory=path.resolve(process.env.AUTHORITY_INTEROP_DIR);if(process.platform==='win32')assert(/^D:\\/i.test(directory));mkdirSync(directory,{recursive:true});writeFileSync(path.join(directory,'authority-interop.json'),JSON.stringify(issued.envelope,null,2));writeFileSync(path.join(directory,'authority-interop.public.txt'),store.publicKey)}
  }finally{store.close()}
 })
-test('renewals retain snapshots and authorization expiry follows the extended maintenance period',()=>{
+test('renewals retain price and entitlement expiry snapshots under the maintenance cap',()=>{
  const {store}=fixture();try{const id=instance(store);moduleReady(store);const order=store.createOrder({instanceId:id,moduleId:'advanced_income_reports'},'owner');store.updateModule('advanced_income_reports',{priceCents:19900,termDays:30,status:'ACTIVE'},'owner');assert.equal(store.lists().orders[0].amount_cents,9900)
  store.markPaid(order.id,{reference:'test'},'owner');const initial=JSON.parse(Buffer.from(store.issue(order.id,'owner').envelope.payload,'base64url'))
  const next=store.createOrder({instanceId:id,moduleId:'advanced_income_reports'},'owner');store.markPaid(next.id,{reference:'renewal-test'},'owner');const renewed=store.issue(next.id,'owner'),claims=JSON.parse(Buffer.from(renewed.envelope.payload,'base64url'))
- assert.equal(claims.expiresAt,initial.expiresAt);assert.equal(claims.featureExpiresAt.advanced_income_reports,claims.expiresAt)
+ assert.equal(claims.expiresAt,initial.expiresAt);assert.equal(claims.featureExpiresAt.advanced_income_reports,store.lists().orders.find(row=>row.id===next.id).valid_until)
  const old=store.lists().instances[0];store.updateInstance(id,{name:old.name,domains:old.domains,clientVersion:old.client_version,maintenanceUntil:new Date(Date.parse(old.maintenance_until)+30*86400000).toISOString()},'owner')
  assert.deepEqual(store.issue(next.id,'owner'),renewed)
- const later=store.createOrder({instanceId:id,moduleId:'advanced_income_reports'},'owner');store.markPaid(later.id,{reference:'extension'},'owner');const extended=JSON.parse(Buffer.from(store.issue(later.id,'owner').envelope.payload,'base64url'));assert.equal(Date.parse(extended.expiresAt)-Date.parse(initial.expiresAt),30*86400000);assert.equal(extended.featureExpiresAt.advanced_income_reports,extended.expiresAt)
+ const later=store.createOrder({instanceId:id,moduleId:'advanced_income_reports'},'owner');store.markPaid(later.id,{reference:'extension'},'owner');const extended=JSON.parse(Buffer.from(store.issue(later.id,'owner').envelope.payload,'base64url'));assert.equal(Date.parse(extended.expiresAt)-Date.parse(initial.expiresAt),30*86400000);assert.equal(extended.featureExpiresAt.advanced_income_reports,store.lists().orders.find(row=>row.id===later.id).valid_until)
  assert.equal(store.lists().audit.filter(row=>row.action==='ISSUE_LICENSE').length,3)
  }finally{store.close()}
 })

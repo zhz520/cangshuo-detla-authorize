@@ -131,7 +131,7 @@ export class Releases {
       if(asset.size<=0||asset.size>500_000_000)fail('更新包大小不正确')
       packages.push({component,version,url:asset.url,downloadPath:'/api/client/artifact',sha256:asset.digest.slice(7),size:asset.size})
     }
-    const entitlements=this.db.prepare('SELECT module_id FROM entitlements WHERE instance_id=? AND valid_until>?').all(claims.instanceId,stamp()).map(row=>row.module_id)
+    const entitlements=this.store.activeEntitlements(claims.instanceId).map(row=>row.module_id)
     for(const item of final)if(item.featureId&&!entitlements.includes(item.featureId))fail(`更新内容「${item.name}」需要先购买相应功能`,403)
     if(!packages.length)fail('所选内容已安装，无需重复更新',409)
     const plan={id:randomUUID(),customerId:claims.customerId,projectId:claims.projectId,instanceId:claims.instanceId,productId:claims.productId,issuedAt:stamp(),expiresAt:new Date(Math.min(Date.now()+15*60000,Date.parse(claims.maintenanceUntil))).toISOString(),fromVersion:body.version,targetVersion:target,schemaVersion:1,items:final,packages}
