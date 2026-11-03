@@ -16,7 +16,7 @@
       <el-table :data="rows"><el-table-column prop="recipient" label="收件邮箱" min-width="180"/><el-table-column prop="subject" label="主题" min-width="170"/><el-table-column label="状态"><template #default="{row}">{{ mailStatuses[row.status] }}</template></el-table-column><el-table-column prop="attempts" label="尝试次数"/><el-table-column prop="last_error" label="错误代码"/><el-table-column label="创建时间" min-width="180"><template #default="{row}">{{ time(row.created_at) }}</template></el-table-column><el-table-column label="操作"><template #default="{row}"><el-button v-if="['FAILED','RETRY'].includes(row.status)" link @click="retry(row.id)">重试</el-button></template></el-table-column></el-table>
     </template>
     <template v-else-if="page==='payments'">
-      <div class="ops-toolbar payment-heading"><div><h3>系统支付通道</h3><p class="muted">在系统级维护商户参数。配置并启用后，到“项目管理”为每个项目选择默认接入和支付方式。</p></div><el-tag :type="data.paymentProviders.some(item=>item.enabled)?'success':'info'">{{ data.paymentProviders.some(item=>item.enabled)?'已有可用支付通道':'尚未启用支付通道' }}</el-tag></div>
+      <div class="ops-toolbar payment-heading"><div><h3>系统支付通道</h3><p class="muted">在系统级维护商户参数。配置并启用后，到“项目管理”为每个项目选择支付接入和开放方式。</p></div><el-tag :type="data.paymentProviders.some(item=>item.enabled)?'success':'info'">{{ data.paymentProviders.some(item=>item.enabled)?'已有可用支付通道':'尚未启用支付通道' }}</el-tag></div>
       <el-card v-for="provider in data.paymentProviders" :key="provider.id" shadow="never" class="payment-card">
         <template #header><div class="payment-card-title"><div><strong>{{ provider.name }}</strong><p>{{ provider.description }}</p></div><el-switch v-model="paymentForms[provider.id].enabled" active-text="系统启用" inactive-text="停用"/></div></template>
         <el-alert v-if="provider.id==='wechat_pay'" title="支付方式彼此独立" type="info" :closable="false"
@@ -28,7 +28,7 @@
           <el-button type="primary" :loading="saving" @click="savePayment(provider)">保存支付通道</el-button>
         </el-form>
       </el-card>
-      <h3 class="subheading">项目支付接入</h3><p class="muted">这里展示每个项目已选择的默认支付接入；修改入口在项目管理的项目设置中。</p>
+      <h3 class="subheading">项目支付接入</h3><p class="muted">这里展示每个项目选择的支付接入与开放方式；修改入口在项目管理的项目设置中。</p>
       <el-table :data="rows"><el-table-column prop="name" label="项目"/><el-table-column prop="customer_name" label="客户"/><el-table-column label="支付通道"><template #default="{row}"><span v-if="row.payment_provider_name">{{ row.payment_provider_name }} <el-tag v-if="!row.payment_provider_enabled" size="small" type="warning">系统已停用</el-tag></span><span v-else class="muted">未接入</span></template></el-table-column><el-table-column label="开放方式"><template #default="{row}">{{ row.payment_methods.map(method=>paymentMethodLabels[method]).join(' / ') || '—' }}</template></el-table-column><el-table-column label="操作"><template #default="{row}"><el-button link type="primary" @click="edit('project',row)">设置支付接入</el-button></template></el-table-column></el-table>
     </template>
     <template v-else-if="page==='releases'">

@@ -82,8 +82,8 @@ export class Management {
         this.db.prepare('INSERT INTO metadata VALUES (?,?)').run('release_catalog_migrated','1')
       }
       this.db.prepare("UPDATE plugins SET status='RETIRED' WHERE id IN ('aliyun_sms','wechat_miniapp')").run()
-      this.db.prepare('INSERT OR IGNORE INTO payment_providers(id,name,description,config_schema,config,enabled,methods,updated_at,created_at) VALUES (?,?,?,?,?,?,?,?,?)').run('wechat_pay','微信支付','系统统一维护商户参数，项目选择是否接入及默认支付方式。',JSON.stringify(WECHAT_PAY_FIELDS),'{}',0,JSON.stringify(['H5','JSAPI']),stamp(),stamp())
-      this.db.prepare("UPDATE payment_providers SET config_schema=? WHERE id='wechat_pay'").run(JSON.stringify(WECHAT_PAY_FIELDS))
+      this.db.prepare('INSERT OR IGNORE INTO payment_providers(id,name,description,config_schema,config,enabled,methods,updated_at,created_at) VALUES (?,?,?,?,?,?,?,?,?)').run('wechat_pay','微信支付','系统统一维护商户参数，项目可独立开放一种或多种支付方式。',JSON.stringify(WECHAT_PAY_FIELDS),'{}',0,JSON.stringify(['H5','JSAPI']),stamp(),stamp())
+      this.db.prepare("UPDATE payment_providers SET description=?,config_schema=? WHERE id='wechat_pay'").run('系统统一维护商户参数，项目可独立开放一种或多种支付方式。',JSON.stringify(WECHAT_PAY_FIELDS))
       const provider=this.db.prepare("SELECT config FROM payment_providers WHERE id='wechat_pay'").get()
       if(provider?.config==='{}') {
         const legacy=this.db.prepare("SELECT ip.config,ip.enabled FROM instance_plugins ip WHERE ip.plugin_id='wechat_pay' AND ip.config<>'{}' ORDER BY ip.updated_at DESC LIMIT 1").get()
