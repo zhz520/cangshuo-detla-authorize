@@ -141,8 +141,10 @@ test('payment credentials live in system settings while projects select enabled 
   let provider=store.management.paymentProviders().find(row=>row.id==='wechat_pay')
   assert.equal(provider.enabled,false);assert.equal(provider.config.apiV3Key,undefined);assert.equal(provider.secretsSet,false)
   assert(provider.config_schema.some(field=>field.key==='officialAppId'));assert(provider.config_schema.some(field=>field.key==='officialAppSecret'))
+  assert.equal(provider.config_schema.find(field=>field.key==='appId').required,false)
   assert.throws(()=>store.management.saveProject(project,{name:'项目A',maintenanceUntil:'2029-01-01T00:00:00Z',paymentProvider:'wechat_pay',paymentMethods:['H5']},'owner'),/先到支付设置启用/)
-  const config={appId:'wx-test',officialAppId:'wx-official',officialAppSecret:'official-secret',officialReturnOrigin:'https://pay.example.com',merchantId:'1900000109',apiV3Key:'system-secret',merchantSerialNo:'serial',privateKeyPath:'/app/cert/private.pem',publicKeyId:'PUB_KEY_TEST',publicKeyPath:'/app/cert/public.pem',notifyUrl:'https://pay.example.com/api/pay/wx/notify',h5AppName:'Example'}
+  const apiV3Key='12345678901234567890123456789012'
+  const config={appId:'wx-test',officialAppId:'wx-official',officialAppSecret:'official-secret',officialReturnOrigin:'https://pay.example.com',merchantId:'1900000109',apiV3Key,merchantSerialNo:'serial',privateKeyPath:'/app/cert/private.pem',publicKeyId:'PUB_KEY_TEST',publicKeyPath:'/app/cert/public.pem',notifyUrl:'https://pay.example.com/api/pay/wx/notify',h5AppName:'Example'}
   store.management.savePaymentProvider('wechat_pay',{enabled:true,methods:['H5','JSAPI','OFFICIAL'],config},'owner')
   provider=store.management.paymentProviders()[0];assert.equal(provider.enabled,true);assert.equal(provider.config.apiV3Key,'');assert.equal(provider.config.officialAppSecret,'');assert.equal(provider.secretsSet,true);assert(!JSON.stringify(store.lists()).includes('system-secret'));assert(!JSON.stringify(store.lists()).includes('official-secret'))
   store.management.saveProject(project,{name:'项目A',maintenanceUntil:'2029-01-01T00:00:00Z',paymentProvider:'wechat_pay',paymentMethods:['H5','JSAPI']},'owner')
@@ -152,6 +154,17 @@ test('payment credentials live in system settings while projects select enabled 
   assert.throws(()=>store.management.saveProject(project,{name:'项目A',maintenanceUntil:'2029-01-01T00:00:00Z',paymentProvider:'wechat_pay',paymentMethods:['APP']},'owner'),/默认支付方式/)
   store.management.saveProject(project,{name:'项目A',maintenanceUntil:'2029-01-01T00:00:00Z',paymentProvider:'',paymentMethods:[]},'owner');assert.equal(store.lists().projects[0].payment_provider,'');assert.deepEqual(store.lists().projects[0].payment_methods,[])
   assert.throws(()=>store.management.savePaymentProvider('wechat_pay',{enabled:true,methods:['OFFICIAL'],config:{...config,officialReturnOrigin:'http://pay.example.com/path'}},'owner'),/Origin/)
+  let officialOnly={...config,appId:''}
+  store.management.savePaymentProvider('wechat_pay',{enabled:true,methods:['OFFICIAL'],config:officialOnly},'owner')
+  assert.deepEqual(store.management.paymentProviders()[0].methods,['OFFICIAL'])
+  let h5WithoutAppId={...config,appId:''}
+  assert.throws(()=>store.management.savePaymentProvider('wechat_pay',{enabled:true,methods:['H5'],config:h5WithoutAppId},'owner'),/微信应用 AppID/)
+  assert.throws(()=>store.management.savePaymentProvider('wechat_pay',{enabled:true,methods:['H5'],config:{...config,apiV3Key:'short'}},'owner'),/32 字节/)
+  assert.throws(()=>store.management.savePaymentProvider('wechat_pay',{enabled:true,methods:['H5'],config:{...config,h5Type:'DESKTOP'}},'owner'),/WAP、IOS 或 ANDROID/)
+  assert.throws(()=>store.management.savePaymentProvider('wechat_pay',{enabled:true,methods:['H5'],config:{...config,notifyUrl:'http://pay.example.com/api/pay/wx/notify'}},'owner'),/HTTPS/)
+  store.management.savePaymentProvider('wechat_pay',{enabled:false,methods:['H5'],config:{...config,appId:'cleared-app-id',h5AppName:''}},'owner')
+  assert.equal(store.management.paymentProviders()[0].config.appId,'cleared-app-id')
+  assert.equal(store.management.paymentProviders()[0].config.h5AppName,undefined)
  }finally{f.close()}
 })
 test('project deposit, balance and collection notes are administrator-only commercial records',()=>{

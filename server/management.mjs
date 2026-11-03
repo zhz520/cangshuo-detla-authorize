@@ -12,19 +12,19 @@ const releaseNotesUrl = (productId, version, publicBase) => {
 }
 export const PAYMENT_METHODS = ['H5', 'JSAPI', 'OFFICIAL', 'NATIVE', 'APP']
 const WECHAT_PAY_FIELDS = [
-  {key:'appId',label:'小程序支付 AppID（JSAPI）',type:'text',required:true},
-  {key:'officialAppId',label:'公众号支付 AppID',type:'text',required:false},
-  {key:'officialAppSecret',label:'公众号 AppSecret',type:'password',required:false},
-  {key:'officialReturnOrigin',label:'公众号支付站点 Origin',type:'text',required:false},
+  {key:'appId',label:'微信应用 AppID（H5 / 小程序 / Native）',type:'text',required:false,requiredFor:['H5','JSAPI','NATIVE','APP'],help:'选择 H5、小程序、Native 或 App 支付时需要；仅开通公众号支付时可留空。'},
+  {key:'officialAppId',label:'公众号支付 AppID',type:'text',required:false,requiredFor:['OFFICIAL'],help:'仅公众号支付使用，可与其他微信应用 AppID 不同。'},
+  {key:'officialAppSecret',label:'公众号 AppSecret',type:'password',required:false,requiredFor:['OFFICIAL'],help:'仅用于公众号网页授权换取 OpenID，保存后不回显。'},
+  {key:'officialReturnOrigin',label:'公众号支付站点 Origin',type:'text',required:false,requiredFor:['OFFICIAL'],help:'填写公众号支付所在客户站点的 HTTPS Origin，不含路径；不会按浏览器类型自动切换支付方式。'},
   {key:'merchantId',label:'微信支付商户号',type:'text',required:true},
-  {key:'apiV3Key',label:'API v3 密钥',type:'password',required:true},
+  {key:'apiV3Key',label:'API v3 密钥',type:'password',required:true,help:'微信支付商户平台 API 安全中设置的 32 字节密钥。'},
   {key:'merchantSerialNo',label:'商户证书序列号',type:'text',required:true},
   {key:'privateKeyPath',label:'商户私钥路径',type:'text',required:true},
   {key:'publicKeyId',label:'微信支付公钥 ID',type:'text',required:true},
   {key:'publicKeyPath',label:'微信支付公钥路径',type:'text',required:true},
   {key:'notifyUrl',label:'支付回调地址',type:'text',required:true},
-  {key:'h5AppName',label:'H5 支付展示名称',type:'text',required:false},
-  {key:'h5Type',label:'H5 客户端类型（WAP/IOS/ANDROID）',type:'text',required:false}
+  {key:'h5AppName',label:'H5 支付展示名称',type:'text',required:false,help:'仅在项目开放 H5 支付时使用。'},
+  {key:'h5Type',label:'H5 客户端类型（WAP/IOS/ANDROID）',type:'text',required:false,help:'普通手机浏览器使用 WAP。'}
 ]
 export function emailAddress(value) {
   if (!/^[^\s<>@,;]+@[^\s<>@,;]+\.[^\s<>@,;]+$/.test(String(value || '')) || value.length > 254) fail('邮箱地址格式不正确')
@@ -254,6 +254,7 @@ export class Management {
     if(!provider)fail('支付通道不存在',404)
     if(!body||typeof body.config!=='object'||Array.isArray(body.config))fail('支付配置格式不正确')
     const schema=JSON.parse(provider.config_schema),previous=JSON.parse(provider.config||'{}'),allowed=new Set(schema.map(field=>field.key)),config={}
+    const submittedFields=new Set(Object.keys(body.config))
     for(const [key,value] of Object.entries(body.config)) {
       if(!allowed.has(key))fail(`支付配置包含未知字段：${key}`)
       const field=schema.find(field=>field.key===key)
@@ -261,14 +262,21 @@ export class Management {
       if(typeof value!=='string'||value.length>5000||/[\r\n]/.test(value))fail(`支付配置 ${key} 格式不正确`)
       if(value.trim())config[key]=value.trim()
     }
-    for(const field of schema)if(previous[field.key]&&!config[field.key])config[field.key]=previous[field.key]
+    for(const field of schema)if(previous[field.key]&&!config[field.key]
+      &&(field.type==='password'||!submittedFields.has(field.key)))config[field.key]=previous[field.key]
     const methods=[...new Set(Array.isArray(body.methods)?body.methods:[])]
     if(methods.length>PAYMENT_METHODS.length||methods.some(method=>!PAYMENT_METHODS.includes(method)))fail('支付方式选择不正确')
     const enabled=body.enabled===true
-    if(enabled){if(!methods.length)fail('启用支付通道前至少选择一种支付方式');for(const field of schema.filter(field=>field.required))if(!config[field.key])fail(`启用前请填写${field.label}`)}
-    if(methods.includes('OFFICIAL'))for(const [key,label] of [['officialAppId','公众号支付 AppID'],['officialAppSecret','公众号 AppSecret'],['officialReturnOrigin','公众号支付站点 Origin']])if(!config[key])fail(`选择公众号支付前请填写${label}`)
+    if(enabled){
+      if(!methods.length)fail('启用支付通道前至少选择一种支付方式')
+      for(const field of schema.filter(field=>field.required))if(!config[field.key])fail(`启用前请填写${field.label}`)
+      for(const field of schema.filter(field=>(field.requiredFor||[]).some(method=>methods.includes(method))))
+        if(!config[field.key])fail(`启用${field.label}对应的支付方式前请填写${field.label}`)
+    }
     if(config.officialReturnOrigin){try{const url=new URL(config.officialReturnOrigin);if(url.protocol!=='https:'||url.username||url.password||url.search||url.hash||(url.pathname&&url.pathname!=='/'))fail('公众号支付站点 Origin 必须是不含路径的 HTTPS 地址')}catch{fail('公众号支付站点 Origin 必须是不含路径的 HTTPS 地址')}}
-    if(config.notifyUrl){try{const url=new URL(config.notifyUrl);if(!['http:','https:'].includes(url.protocol)||url.username||url.password)fail('支付回调地址不正确')}catch{fail('支付回调地址不正确')}}
+    if(config.notifyUrl){try{const url=new URL(config.notifyUrl);if(url.protocol!=='https:'||url.username||url.password)fail('支付回调地址必须是 HTTPS 地址')}catch{fail('支付回调地址必须是 HTTPS 地址')}}
+    if(config.apiV3Key && Buffer.byteLength(config.apiV3Key,'utf8')!==32) fail('微信支付 API v3 密钥必须为 32 字节')
+    if(config.h5Type){config.h5Type=config.h5Type.toUpperCase();if(!['WAP','IOS','ANDROID'].includes(config.h5Type))fail('H5 客户端类型只能填写 WAP、IOS 或 ANDROID')}
     return this.store.transaction(()=>{
       this.db.prepare('UPDATE payment_providers SET config=?,enabled=?,methods=?,updated_at=? WHERE id=?').run(JSON.stringify(config),enabled?1:0,JSON.stringify(methods),stamp(),id)
       this.store.audit(actor,'UPDATE_PAYMENT_PROVIDER',id,{enabled,methods,fields:Object.keys(config)})

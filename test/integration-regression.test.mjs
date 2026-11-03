@@ -38,7 +38,7 @@ test('project renewal retains disabled payment configuration while signed claims
   try{
     // Disposable fixture configuration: no payment adapter or real credentials.
     const fields=JSON.parse(store.db.prepare("SELECT config_schema FROM payment_providers WHERE id='wechat_pay'").get().config_schema)
-    const config=Object.fromEntries(fields.filter(field=>field.required).map(field=>[field.key,field.key==='notifyUrl'?'https://client.example.com/notify':'fixture-only']))
+    const config=Object.fromEntries(fields.filter(field=>field.required||field.requiredFor?.includes('H5')).map(field=>[field.key,field.key==='notifyUrl'?'https://client.example.com/notify':field.key==='apiV3Key'?'12345678901234567890123456789012':'fixture-only']))
     store.management.savePaymentProvider('wechat_pay',{enabled:true,config,methods:['H5','JSAPI']},'test')
     store.management.saveProject(project,{name:'回归项目',maintenanceUntil:'2032-01-01T00:00:00Z',paymentProvider:'wechat_pay',paymentMethods:['H5','JSAPI']},'test')
     store.management.savePaymentProvider('wechat_pay',{enabled:true,config:{},methods:['H5']},'test')
