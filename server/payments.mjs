@@ -178,7 +178,7 @@ export class PaymentService {
   }
 
   async notification(headers, rawBody) {
-    const config = this.wechatConfig(true)
+    const config = this.wechatConfig(true,true)
     await this.verifyWechatSignature(headers, rawBody, config)
     let body
     try { body = JSON.parse(rawBody) } catch { fail('微信通知格式错误', 400) }
@@ -309,19 +309,19 @@ export class PaymentService {
     return this.jsapiParams(config.officialAppId, context.payment.prepay_id, config.privateKey)
   }
 
-  wechatConfig(requireInvoice) {
+  wechatConfig(requireInvoice, allowDisabled = false) {
     const row = this.store.db.prepare("SELECT enabled,methods,config FROM payment_providers WHERE id='wechat_pay'").get()
     if (!row) { if (requireInvoice) fail('微信支付通道尚未配置', 503); return { configured: false, methods: [] } }
     let data
     try { data = JSON.parse(row.config || '{}') } catch { if (requireInvoice) fail('微信支付配置格式错误', 503); return { configured: false, methods: [] } }
     const methods = JSON.parse(row.methods || '[]')
     if (!requireInvoice) return { configured: row.enabled === 1, methods }
-    if (row.enabled !== 1) fail('微信支付通道已停用', 503)
+    if (row.enabled !== 1 && !allowDisabled) fail('微信支付通道已停用', 503)
     const required=['merchantId','apiV3Key','merchantSerialNo','privateKeyPath','publicKeyId','publicKeyPath','notifyUrl']
     if(methods.includes('OFFICIAL'))required.push('officialAppId','officialAppSecret','officialReturnOrigin')
     if(methods.some(method=>['NATIVE','H5'].includes(method)))required.push('appId')
     for (const key of required) if (!data[key]) fail('微信支付配置不完整', 503)
-    if (!methods.some(method => ALLOWED_METHODS.has(method))) fail('微信支付未启用收款页可用方式', 503)
+    if (!allowDisabled && !methods.some(method => ALLOWED_METHODS.has(method))) fail('微信支付未启用收款页可用方式', 503)
     const privateKey = createPrivateKey(this.readSecretFile(data.privateKeyPath, 'private'))
     const publicKey = createPublicKey(this.readSecretFile(data.publicKeyPath, 'public'))
     const origin = methods.includes('OFFICIAL') ? new URL(data.officialReturnOrigin) : null

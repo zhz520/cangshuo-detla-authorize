@@ -59,6 +59,7 @@ test('hosted checkout creates a central order and paid notification issues the l
     assert.equal(payParams.appId,'wx-official-test');assert.equal(payParams.package,'prepay_id=wx-prepay-test')
     const payment=f.store.db.prepare('SELECT * FROM online_payments WHERE order_id=?').get(claims.orderId)
     assert.equal(payment.method,'OFFICIAL');assert.equal(payment.openid,'openid-test')
+    f.store.db.prepare("UPDATE payment_providers SET enabled=0 WHERE id='wechat_pay'").run()
 
     const transaction={mchid:'1900000109',appid:'wx-official-test',out_trade_no:payment.out_trade_no,transaction_id:'420000TEST',trade_state:'SUCCESS',amount:{total:9900,currency:'CNY'}}
     const nonce='abcdefghijkl',associated='transaction';const cipher=createCipheriv('aes-256-gcm',Buffer.from(apiV3Key),Buffer.from(nonce));cipher.setAAD(Buffer.from(associated));const encrypted=Buffer.concat([cipher.update(JSON.stringify(transaction)),cipher.final(),cipher.getAuthTag()])
