@@ -5,6 +5,7 @@ import path from 'node:path'
 import { HttpError, fail } from './store.mjs'
 import { DEFAULT_PRODUCT } from './management.mjs'
 import { Mailer } from './mail.mjs'
+import { PaymentService } from './payments.mjs'
 import { Readable,Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 
@@ -19,9 +20,10 @@ const requestBaseUrl = request => {
   return `${protocol}://${host}`
 }
 const releaseNotesPage = (productId, release) => `<main><p class="eyebrow">CANGSHUO · RELEASE NOTES</p><h1>软件正式版 ${html(release.version)}</h1><p class="meta">软件 ${html(productId)} · 发布于 ${html(release.published_at)}</p><section><h2>更新说明</h2><pre>${html(release.notes)}</pre></section><section><h2>更新内容</h2>${release.items.length ? `<ul>${release.items.map(item=>`<li><strong>${html(item.name)}</strong>${item.required?' <span class="tag">必要更新</span>':''}${item.description?`<p>${html(item.description)}</p>`:''}</li>`).join('')}</ul>` : '<p>此版本暂未登记可选更新内容。</p>'}</section><p class="foot">此页由授权运营中心提供。</p></main>`
-export function createAuthorityServer(store, { secureCookie = false, staticDirectory, allowedOrigins = [] } = {}) {
+export function createAuthorityServer(store, { secureCookie = false, staticDirectory, allowedOrigins = [], payments = new PaymentService(store) } = {}) {
   const mailer = new Mailer(store)
   const attempts = new Map()
+  const checkoutAttempts = new Map()
   const trustedOrigins = new Set(allowedOrigins.map(value => { try { const url = new URL(value); if (!['http:','https:'].includes(url.protocol) || url.username || url.password) throw new Error(); return url.origin } catch { fail('后台允许来源配置格式错误') } }))
   return createServer(async (request, response) => {
     response.setHeader('X-Content-Type-Options', 'nosniff'); response.setHeader('X-Frame-Options', 'DENY'); response.setHeader('Referrer-Policy', 'same-origin')
@@ -29,7 +31,7 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
     const json = (data, status = 200) => { response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' }); response.end(JSON.stringify(data)) }
     try {
       const url = new URL(request.url, 'http://localhost'), route = url.pathname, method = request.method
-      let body = {}
+      let body = {}, rawBody = ''
       if (['POST', 'PUT', 'PATCH'].includes(method)) {
         if (request.headers.origin) {
           let origin; try { origin = new URL(request.headers.origin) } catch { fail('请求来源不正确', 403) }
@@ -45,10 +47,47 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
         if (!String(request.headers['content-type'] || '').startsWith('application/json')) fail('请求必须为 JSON', 415)
         let size = 0, chunks = []
         for await (const chunk of request) { size += chunk.length; if (size > 65536) fail('请求内容过大', 413); chunks.push(chunk) }
-        try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') } catch { fail('JSON 格式不正确') }
+        rawBody = Buffer.concat(chunks).toString('utf8')
+        try { body = JSON.parse(rawBody || '{}') } catch { fail('JSON 格式不正确') }
         if (!body || typeof body !== 'object' || Array.isArray(body)) fail('请求内容须为对象')
       }
       if (route === '/health' && method === 'GET') return json({ ok: true, service: 'cangshuo-detla-authorize' })
+      if (route === '/api/client/checkout' && method === 'POST') {
+        const ip=String(request.headers['x-forwarded-for']||request.socket.remoteAddress||'').split(',',1)[0].trim()
+        const now=Date.now(),entry=checkoutAttempts.get(ip)
+        if(entry&&entry.until>now&&entry.count>=30)fail('购买请求过于频繁，请稍后重试',429)
+        if(!entry||entry.until<=now)checkoutAttempts.set(ip,{count:1,until:now+60000});else entry.count++
+        return json(await payments.createCheckout(body,requestBaseUrl(request)),201)
+      }
+      let checkoutMatch=route.match(/^\/api\/checkout\/([A-Za-z0-9_-]{43})$/)
+      if(checkoutMatch&&method==='GET')return json(payments.summary(checkoutMatch[1]))
+      checkoutMatch=route.match(/^\/api\/checkout\/([A-Za-z0-9_-]{43})\/native$/)
+      if(checkoutMatch&&method==='GET')return json({svg:await payments.nativeQr(checkoutMatch[1])})
+      checkoutMatch=route.match(/^\/api\/checkout\/([A-Za-z0-9_-]{43})\/prepay$/)
+      if(checkoutMatch&&method==='POST'){
+        if(!body||typeof body.method!=='string')fail('支付方式不正确')
+        const ip=String(request.headers['x-forwarded-for']||request.socket.remoteAddress||'').split(',',1)[0].trim()
+        return json(await payments.prepay(checkoutMatch[1],body.method,{clientIp:ip}))
+      }
+      if(route==='/api/pay/wx/oauth'&&method==='GET'){
+        const target=payments.oauthUrl(String(url.searchParams.get('token')||''),requestBaseUrl(request))
+        response.writeHead(302,{Location:target});return response.end()
+      }
+      if(route==='/api/pay/wx/oauth-callback'&&method==='GET'){
+        response.setHeader('Content-Security-Policy',"default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'")
+        response.writeHead(200,{ 'Content-Type':'text/html; charset=utf-8' })
+        return response.end(await payments.oauthCallback(String(url.searchParams.get('token')||''),String(url.searchParams.get('code')||'')))
+      }
+      if(route==='/api/pay/wx/notify'&&method==='POST'){
+        const result=await payments.notification(request.headers,rawBody)
+        return json({code:'SUCCESS',message:'成功',ignored:Boolean(result.ignored)})
+      }
+      const payMatch=route.match(/^\/pay\/([A-Za-z0-9_-]{43})$/)
+      if(payMatch&&method==='GET'){
+        response.setHeader('Content-Security-Policy',"default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'")
+        response.writeHead(200,{ 'Content-Type':'text/html; charset=utf-8' })
+        return response.end(await payments.page(payMatch[1],request,requestBaseUrl(request)))
+      }
       let publicMatch = route.match(/^\/public\/release-notes\/([\w-]+)\/([^/]+)$/)
       if (publicMatch && method === 'GET') {
         const productId=publicMatch[1],version=decodeURIComponent(publicMatch[2]),release=store.releaseService.publicNotes(productId,version)

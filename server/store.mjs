@@ -459,9 +459,8 @@ export class AuthorityStore {
       return { instanceId, pluginId, enabled: body.enabled, config: JSON.parse(config) }
     })
   }
-  reportVersion(license, version) {
+  verifyClientLicense(license) {
     if (!license || !['delta-license-v1','cangshuo-instance-v1'].includes(license.format) || typeof license.payload !== 'string' || license.payload.length>24000 || typeof license.signature !== 'string' || license.signature.length>128) fail('客户端授权信息无效', 401)
-    version = text(version, '客户端版本', 80); compareVersions(version, version)
     if (!verify(null, Buffer.from(license.format+'.' + license.payload), this.publicKey, Buffer.from(license.signature, 'base64url'))) fail('客户端授权签名无效', 401)
     let claims
     try { claims = JSON.parse(Buffer.from(license.payload, 'base64url')) } catch { fail('客户端授权内容无效', 401) }
@@ -469,12 +468,53 @@ export class AuthorityStore {
     if (claims.instanceId == null || claims.customerId == null) fail('客户端授权已失效', 401)
     const instance = this.db.prepare('SELECT * FROM instances WHERE id=?').get(claims.instanceId)
     if (!instance || instance.customer_id !== claims.customerId) fail('授权实例不存在或客户不匹配', 403)
+    return {claims,instance}
+  }
+  reportVersion(license, version) {
+    const {claims,instance}=this.verifyClientLicense(license)
+    version = text(version, '客户端版本', 80); compareVersions(version, version)
     const reportedAt = now()
     this.transaction(() => {
       this.db.prepare('UPDATE instances SET client_version=?,last_seen_at=? WHERE id=?').run(version, reportedAt, instance.id)
       if (instance.client_version !== version) this.audit('client', 'CLIENT_VERSION_REPORT', instance.id, { from: instance.client_version, to: version })
     })
     return { accepted: true, instanceId: instance.id, version, reportedAt, ...this.management.clientResponse(instance.id,version) }
+  }
+  checkoutSession(tokenHash) {
+    if(typeof tokenHash!=='string'||!/^[a-f0-9]{64}$/.test(tokenHash))fail('支付链接无效',404)
+    return this.db.prepare(`SELECT s.order_id,s.expires_at,o.instance_id,o.module_id,o.amount_cents,o.term_days,o.status AS order_status,o.valid_from,o.valid_until,o.paid_at,o.granted_at,m.name AS module_name,m.description AS module_description,i.customer_id,i.name AS instance_name,i.maintenance_until,c.name AS customer_name,p.payment_provider,p.payment_methods,pay.enabled AS provider_enabled,pay.methods AS provider_methods FROM checkout_sessions s JOIN orders o ON o.id=s.order_id JOIN instances i ON i.id=o.instance_id JOIN projects p ON p.id=i.project_id JOIN customers c ON c.id=i.customer_id JOIN modules m ON m.id=o.module_id LEFT JOIN payment_providers pay ON pay.id=p.payment_provider WHERE s.token_hash=?`).get(tokenHash)
+  }
+  createCheckoutToken(orderId, ttlMs=30*60*1000) {
+    const token=randomBytes(32).toString('base64url'),tokenHash=digest(token),expiresAt=Date.now()+ttlMs
+    this.db.prepare('INSERT INTO checkout_sessions(token_hash,order_id,expires_at,created_at) VALUES (?,?,?,?) ON CONFLICT(order_id) DO UPDATE SET token_hash=excluded.token_hash,expires_at=excluded.expires_at,created_at=excluded.created_at').run(tokenHash,orderId,expiresAt,now())
+    return {token,expiresAt:new Date(expiresAt).toISOString()}
+  }
+  onlinePayment(orderId, method, amountCents, openid=null) {
+    let row=this.db.prepare('SELECT * FROM online_payments WHERE order_id=?').get(orderId)
+    if(row)return row
+    const id=randomUUID(),outTradeNo='CS'+randomUUID().replaceAll('-','').slice(0,28)
+    this.db.prepare('INSERT INTO online_payments(id,order_id,out_trade_no,method,openid,amount_cents,status,created_at) VALUES (?,?,?,?,?,?,?,?)').run(id,orderId,outTradeNo,method,openid,amountCents,'PENDING',now())
+    return this.db.prepare('SELECT * FROM online_payments WHERE order_id=?').get(orderId)
+  }
+  saveOnlinePrepay(orderId,prepayId,method,openid=null) {
+    this.db.prepare('UPDATE online_payments SET prepay_id=?,method=?,openid=COALESCE(?,openid) WHERE order_id=?').run(prepayId,method,openid,orderId)
+  }
+  confirmOnlinePayment(outTradeNo, transactionId) {
+    return this.transaction(()=>{
+      const payment=this.db.prepare('SELECT * FROM online_payments WHERE out_trade_no=?').get(outTradeNo)
+      if(!payment)fail('支付单不存在',404)
+      if(payment.status==='PAID')return {id:payment.order_id,alreadyPaid:true}
+      const order=this.db.prepare('SELECT * FROM orders WHERE id=?').get(payment.order_id)
+      if(!order)fail('订单不存在',404)
+      if(order.status==='CANCELLED')fail('订单已取消，支付款需要人工退款',409)
+      if(!['UNPAID','PAID'].includes(order.status))fail('订单状态不支持在线支付确认',409)
+      if(order.amount_cents!==payment.amount_cents)fail('支付单金额与订单金额不一致',409)
+      const paidAt=now()
+      this.db.prepare("UPDATE online_payments SET status='PAID',transaction_id=?,paid_at=? WHERE out_trade_no=?").run(transactionId,paidAt,outTradeNo)
+      if(order.status==='UNPAID')this.db.prepare("UPDATE orders SET status='PAID',payment_reference=?,paid_at=? WHERE id=?").run(`微信支付 ${transactionId}`,paidAt,order.id)
+      this.audit('wechat_pay','CONFIRM_ONLINE_PAYMENT',order.id,{outTradeNo,transactionId,amountCents:payment.amount_cents})
+      return {id:order.id,alreadyPaid:false}
+    })
   }
   createRelease(body, actor) { return this.releaseService.create(body,actor) }
   publishRelease(version, actor) { return this.releaseService.publish(DEFAULT_PRODUCT,version,actor) }

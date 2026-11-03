@@ -18,15 +18,15 @@ const WECHAT_PAY_FIELDS = [
   {key:'appId',label:'微信应用 AppID（H5 / 小程序 / Native）',type:'text',required:false,requiredFor:['H5','JSAPI','NATIVE','APP'],help:'选择 H5、小程序、Native 或 App 支付时需要；仅开通公众号支付时可留空。'},
   {key:'officialAppId',label:'公众号支付 AppID',type:'text',required:false,requiredFor:['OFFICIAL'],help:'仅公众号支付使用，可与其他微信应用 AppID 不同。'},
   {key:'officialAppSecret',label:'公众号 AppSecret',type:'password',required:false,requiredFor:['OFFICIAL'],help:'仅用于公众号网页授权换取 OpenID，保存后不回显。'},
-  {key:'officialReturnOrigin',label:'公众号支付站点 Origin',type:'text',required:false,requiredFor:['OFFICIAL'],help:'填写公众号支付所在客户站点的 HTTPS Origin，不含路径；不会按浏览器类型自动切换支付方式。'},
+  {key:'officialReturnOrigin',label:'授权中心支付站点 Origin',type:'text',required:false,requiredFor:['OFFICIAL'],help:'填写授权中心收款页的 HTTPS Origin，例如 https://auth.kk520yy.com；该域名需在公众号网页授权域名中配置。'},
   {key:'merchantId',label:'微信支付商户号',type:'text',required:true},
   {key:'apiV3Key',label:'API v3 密钥',type:'password',required:true,help:'微信支付商户平台 API 安全中设置的 32 字节密钥。'},
   {key:'merchantSerialNo',label:'商户证书序列号',type:'text',required:true},
   {key:'privateKeyPath',label:'商户私钥文件',type:'text',required:true,upload:'private',help:'上传微信支付商户平台下载的 apiclient_key.pem；上传后自动填写服务器受保护路径。'},
   {key:'publicKeyId',label:'微信支付公钥 ID',type:'text',required:true},
   {key:'publicKeyPath',label:'微信支付公钥文件',type:'text',required:true,upload:'public',help:'上传当前商户号在微信支付平台下载的 pub_key.pem；上传后自动填写服务器受保护路径。'},
-  {key:'notifyUrl',label:'支付结果回调地址（Notify URL）',type:'text',required:true,placeholder:'https://jgsapi.kk520yy.com/api/pay/wx/notify',help:'这是客户端电竞系统的公网 HTTPS 地址，固定路径为 /api/pay/wx/notify。微信服务器会主动访问，不能填授权中心、localhost、内网 IP 或需要登录的地址。'},
-  {key:'refundNotifyUrl',label:'退款结果回调地址（可选）',type:'text',required:false,placeholder:'https://jgsapi.kk520yy.com/api/pay/wx/refund-notify',help:'这是客户端接收退款结果的公网 HTTPS 地址，固定路径为 /api/pay/wx/refund-notify；留空时客户端按支付回调域名推导。'},
+  {key:'notifyUrl',label:'授权中心支付回调地址（Notify URL）',type:'text',required:true,placeholder:'https://auth.kk520yy.com/api/pay/wx/notify',help:'用于接收客户购买付费功能后的微信支付结果，必须填写授权中心的公网 HTTPS 地址，固定路径为 /api/pay/wx/notify。'},
+  {key:'refundNotifyUrl',label:'授权中心退款回调地址（可选）',type:'text',required:false,placeholder:'https://auth.kk520yy.com/api/pay/wx/refund-notify',help:'用于授权中心处理功能订单退款结果，固定路径为 /api/pay/wx/refund-notify。'},
   {key:'h5AppName',label:'H5 支付展示名称',type:'text',required:false,help:'仅在项目开放 H5 支付时使用。'},
   {key:'h5Type',label:'H5 客户端类型（WAP/IOS/ANDROID）',type:'text',required:false,help:'普通手机浏览器使用 WAP。'}
 ]
@@ -85,6 +85,8 @@ export class Management {
       CREATE TABLE IF NOT EXISTS mail_queue (id TEXT PRIMARY KEY, dedupe_key TEXT NOT NULL UNIQUE, project_id TEXT, event TEXT NOT NULL, recipient TEXT NOT NULL, subject TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'PENDING', attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT NOT NULL, last_error TEXT, created_at TEXT NOT NULL, sent_at TEXT);
       CREATE TABLE IF NOT EXISTS project_status_history (project_id TEXT PRIMARY KEY REFERENCES projects(id), status TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS payment_providers (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL, config_schema TEXT NOT NULL, config TEXT NOT NULL DEFAULT '{}', enabled INTEGER NOT NULL DEFAULT 0, methods TEXT NOT NULL DEFAULT '[]', updated_at TEXT NOT NULL, created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS checkout_sessions (token_hash TEXT PRIMARY KEY, order_id TEXT NOT NULL UNIQUE REFERENCES orders(id), expires_at INTEGER NOT NULL, created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS online_payments (id TEXT PRIMARY KEY, order_id TEXT NOT NULL UNIQUE REFERENCES orders(id), out_trade_no TEXT NOT NULL UNIQUE, method TEXT NOT NULL, openid TEXT, prepay_id TEXT, transaction_id TEXT UNIQUE, amount_cents INTEGER NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, paid_at TEXT);
     `)
     for (const [table, column, definition] of [['instances','project_id','TEXT REFERENCES projects(id)'], ['modules','product_id',"TEXT NOT NULL DEFAULT 'detla'"], ['projects','payment_provider',"TEXT NOT NULL DEFAULT ''"], ['projects','payment_methods',"TEXT NOT NULL DEFAULT '[]'"], ['projects','deposit_amount_cents','INTEGER'], ['projects','balance_amount_cents','INTEGER'], ['projects','contract_note',"TEXT NOT NULL DEFAULT ''"]]) {
       if (!this.db.prepare(`PRAGMA table_info(${table})`).all().some(row => row.name === column)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
@@ -105,8 +107,8 @@ export class Management {
         this.db.prepare('INSERT INTO metadata VALUES (?,?)').run('release_catalog_migrated','1')
       }
       this.db.prepare("UPDATE plugins SET status='RETIRED' WHERE id IN ('aliyun_sms','wechat_miniapp')").run()
-      this.db.prepare('INSERT OR IGNORE INTO payment_providers(id,name,description,config_schema,config,enabled,methods,updated_at,created_at) VALUES (?,?,?,?,?,?,?,?,?)').run('wechat_pay','微信支付','系统统一维护商户参数，项目可独立开放一种或多种支付方式。',JSON.stringify(WECHAT_PAY_FIELDS),'{}',0,JSON.stringify(['H5','JSAPI']),stamp(),stamp())
-      this.db.prepare("UPDATE payment_providers SET description=?,config_schema=? WHERE id='wechat_pay'").run('系统统一维护商户参数，项目可独立开放一种或多种支付方式。',JSON.stringify(WECHAT_PAY_FIELDS))
+      this.db.prepare('INSERT OR IGNORE INTO payment_providers(id,name,description,config_schema,config,enabled,methods,updated_at,created_at) VALUES (?,?,?,?,?,?,?,?,?)').run('wechat_pay','微信支付','客户购买付费功能时由授权中心统一收款，项目可独立开放一种或多种支付方式。',JSON.stringify(WECHAT_PAY_FIELDS),'{}',0,JSON.stringify(['H5','JSAPI']),stamp(),stamp())
+      this.db.prepare("UPDATE payment_providers SET description=?,config_schema=? WHERE id='wechat_pay'").run('客户购买付费功能时由授权中心统一收款，项目可独立开放一种或多种支付方式。',JSON.stringify(WECHAT_PAY_FIELDS))
       const provider=this.db.prepare("SELECT config FROM payment_providers WHERE id='wechat_pay'").get()
       if(provider?.config==='{}') {
         const legacy=this.db.prepare("SELECT ip.config,ip.enabled FROM instance_plugins ip WHERE ip.plugin_id='wechat_pay' AND ip.config<>'{}' ORDER BY ip.updated_at DESC LIMIT 1").get()
