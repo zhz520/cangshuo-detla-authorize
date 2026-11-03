@@ -1,4 +1,4 @@
-import { createDecipheriv, createHash, createPrivateKey, createPublicKey, randomBytes, sign, verify } from 'node:crypto'
+import { createDecipheriv, createHash, createPrivateKey, createPublicKey, randomBytes, sign, verify, X509Certificate } from 'node:crypto'
 import { readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
 import QRCode from 'qrcode'
@@ -14,6 +14,7 @@ const iso = ms => ms == null ? null : new Date(ms).toISOString()
 export class PaymentService {
   constructor(store, { fetcher = fetch, qr = QRCode } = {}) {
     this.store = store; this.fetcher = fetcher; this.qr = qr
+    this.platformCertificates = new Map(); this.certificateExpiresAt = 0; this.certificateLoading = null
   }
 
   async createCheckout(body, baseUrl) {
@@ -178,7 +179,7 @@ export class PaymentService {
 
   async notification(headers, rawBody) {
     const config = this.wechatConfig(true)
-    this.verifyWechatSignature(headers, rawBody, config.publicKey, config.publicKeyId)
+    await this.verifyWechatSignature(headers, rawBody, config)
     let body
     try { body = JSON.parse(rawBody) } catch { fail('微信通知格式错误', 400) }
     if (body.event_type && body.event_type !== 'TRANSACTION.SUCCESS') return { ignored: true, state: body.event_type }
@@ -222,26 +223,65 @@ export class PaymentService {
 
   async wechatRequest(method, requestPath, body) {
     const config = this.wechatConfig(true)
+    const signed = await this.signedWechatFetch(config, method, requestPath, body)
+    if (requestPath === '/v3/certificates') {
+      await this.refreshCertificates(config)
+      return signed.text ? JSON.parse(signed.text) : {}
+    }
+    await this.verifyWechatSignature(signed.headers, signed.text, config)
+    let result = {}
+    if (signed.text) try { result = JSON.parse(signed.text) } catch { fail('微信支付返回内容格式错误', 502) }
+    if (!signed.response.ok) fail(`微信支付请求失败：${result.message || result.code || signed.response.status}`, 502)
+    return result
+  }
+
+  async signedWechatFetch(config, method, requestPath, body) {
     const timestamp = Math.floor(Date.now()/1000).toString(), nonce = randomBytes(16).toString('hex'), bodyText = body == null ? '' : JSON.stringify(body)
     const message = `${method}\n${requestPath}\n${timestamp}\n${nonce}\n${bodyText}\n`
     const signature = sign('RSA-SHA256', Buffer.from(message), config.privateKey).toString('base64')
     const authorization = `WECHATPAY2-SHA256-RSA2048 mchid="${config.merchantId}",nonce_str="${nonce}",signature="${signature}",timestamp="${timestamp}",serial_no="${config.merchantSerialNo}"`
-    const response = await this.fetcher(API_BASE + requestPath, { method, headers: { authorization, accept: 'application/json', 'content-type': 'application/json', 'user-agent': 'cangshuo-authority/1.0' }, body: bodyText || undefined })
+    const response = await this.fetcher(API_BASE + requestPath, { method, headers: { authorization, accept: 'application/json', 'accept-language': 'zh-CN', 'content-type': 'application/json', 'user-agent': 'cangshuo-authority/1.0' }, body: bodyText || undefined })
     const responseText = await response.text()
-    this.verifyWechatSignature(Object.fromEntries(response.headers.entries()), responseText, config.publicKey, config.publicKeyId)
-    let result = {}
-    if (responseText) try { result = JSON.parse(responseText) } catch { fail('微信支付返回内容格式错误', 502) }
-    if (!response.ok) fail(`微信支付请求失败：${result.message || result.code || response.status}`, 502)
-    return result
+    return { response, text: responseText, headers: Object.fromEntries(response.headers.entries()) }
   }
 
-  verifyWechatSignature(headers, body, publicKey, publicKeyId) {
+  async verifyWechatSignature(headers, body, config) {
     const signature = headers['wechatpay-signature'], timestamp = headers['wechatpay-timestamp'], nonce = headers['wechatpay-nonce'], serial = headers['wechatpay-serial']
     if (!signature || !timestamp || !nonce || !serial || !/^\d{1,12}$/.test(timestamp)) fail('微信支付签名头缺失', 401)
-    if (publicKeyId && serial !== publicKeyId) fail('微信支付公钥编号不匹配', 401)
     if (Math.abs(Math.floor(Date.now()/1000) - Number(timestamp)) > 300) fail('微信支付签名时间已过期', 401)
+    let publicKey = serial === config.publicKeyId ? config.publicKey : this.platformCertificates.get(serial.toUpperCase())
+    if (!publicKey) { await this.refreshCertificates(config); publicKey = this.platformCertificates.get(serial.toUpperCase()) }
+    if (!publicKey) fail('微信支付签名证书未知', 401)
     const valid = verify('RSA-SHA256', Buffer.from(`${timestamp}\n${nonce}\n${body}\n`), publicKey, Buffer.from(signature, 'base64'))
     if (!valid) fail('微信支付签名验证失败', 401)
+  }
+
+  async refreshCertificates(config) {
+    if (this.certificateLoading) return this.certificateLoading
+    if (this.platformCertificates.size && Date.now() < this.certificateExpiresAt) return
+    this.certificateLoading = (async () => {
+      const signed = await this.signedWechatFetch(config, 'GET', '/v3/certificates', null)
+      let body
+      try { body = JSON.parse(signed.text) } catch { fail('微信支付平台证书响应格式错误', 502) }
+      if (!signed.response.ok) fail(`微信支付平台证书获取失败：${body.message || body.code || signed.response.status}`, 502)
+      if (!Array.isArray(body.data) || body.data.length > 20) fail('微信支付平台证书列表无效', 502)
+      const certificates = new Map(), now=Date.now()
+      for (const item of body.data) {
+        try {
+          const pem = this.decryptResource(item.encrypt_certificate, config.apiV3Key)
+          const certificate = new X509Certificate(pem)
+          if (Date.parse(certificate.validFrom) > now + 300000 || Date.parse(certificate.validTo) <= now) continue
+          certificates.set(certificate.serialNumber.toUpperCase(), certificate.publicKey)
+        } catch {}
+      }
+      const serial = String(signed.headers['wechatpay-serial'] || '').toUpperCase(), key = certificates.get(serial)
+      if (!key) fail('微信支付平台证书序列号不匹配', 502)
+      const timestamp=signed.headers['wechatpay-timestamp'],nonce=signed.headers['wechatpay-nonce'],signature=signed.headers['wechatpay-signature']
+      if (!timestamp || !nonce || !signature || !verify('RSA-SHA256',Buffer.from(`${timestamp}\n${nonce}\n${signed.text}\n`),key,Buffer.from(signature,'base64')))fail('微信支付平台证书响应签名无效',502)
+      this.platformCertificates = certificates
+      this.certificateExpiresAt = now + 11 * 60 * 60 * 1000
+    })().finally(() => { this.certificateLoading = null })
+    return this.certificateLoading
   }
 
   decryptResource(resource, apiV3Key) {

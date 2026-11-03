@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {createCipheriv,createHash,generateKeyPairSync,randomBytes,randomUUID,sign,verify} from 'node:crypto'
+import {createCipheriv,createHash,createPublicKey,generateKeyPairSync,randomBytes,randomUUID,sign,verify} from 'node:crypto'
 import {mkdirSync,mkdtempSync,rmSync} from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -17,7 +17,7 @@ function fixture(){
   store.createCustomer({id:'742',name:'见高山电竞'},'owner')
   const project=store.management.saveProject(null,{customerId:'742',productId:'detla',name:'见高山电竞 742',maintenanceUntil:'2027-12-01T15:59:59.000Z'},'owner').id
   const instance='4aa1ade5-cd37-4d25-bd31-5f4f0fba391d'
-  store.createInstance({id:instance,customerId:'742',projectId:project,name:'见高山电竞 742',domains:['jgsapi.kk520yy.com','jgs.kk520yy.com'],clientVersion:'1.5.9'},'owner')
+  store.createInstance({id:instance,customerId:'742',projectId:project,name:'见高山电竞 742',domains:['jgsapi.kk520yy.com','jgs.kk520yy.com'],clientVersion:'1.5.10'},'owner')
   store.updateModule('advanced_income_reports',{priceCents:9900,termDays:365,status:'ACTIVE'},'owner')
   const merchantKey=store.management.uploadPaymentKey({kind:'private',filename:'apiclient_key.pem',contentBase64:Buffer.from(merchant.privateKey).toString('base64')},'owner')
   const wechatKey=store.management.uploadPaymentKey({kind:'public',filename:'pub_key.pem',contentBase64:Buffer.from(wechat.publicKey).toString('base64')},'owner')
@@ -26,10 +26,10 @@ function fixture(){
   return {store,project,instance,wechat,merchant,cleanup(){store.close();if(path.dirname(path.resolve(directory))===path.resolve(base))rmSync(directory,{recursive:true,force:true})}}
 }
 
-function signedWechatBody(body,privateKey){
+function signedWechatBody(body,privateKey,serial='PUB_KEY_TEST'){
   const timestamp=Math.floor(Date.now()/1000).toString(),nonce=randomBytes(16).toString('hex')
   const signature=sign('RSA-SHA256',Buffer.from(`${timestamp}\n${nonce}\n${body}\n`),privateKey).toString('base64')
-  return {'wechatpay-signature':signature,'wechatpay-timestamp':timestamp,'wechatpay-nonce':nonce,'wechatpay-serial':'PUB_KEY_TEST','content-type':'application/json'}
+  return {'wechatpay-signature':signature,'wechatpay-timestamp':timestamp,'wechatpay-nonce':nonce,'wechatpay-serial':serial,'content-type':'application/json'}
 }
 
 test('hosted checkout creates a central order and paid notification issues the license',async()=>{
@@ -40,12 +40,12 @@ test('hosted checkout creates a central order and paid notification issues the l
       requests.push({url:String(url),options})
       if(String(url).includes('/v3/pay/transactions/jsapi')){
         const body=JSON.stringify({prepay_id:'wx-prepay-test'})
-        return new Response(body,{status:200,headers:signedWechatBody(body,f.wechat.privateKey)})
+        return new Response(body,{status:200,headers:signedWechatBody(body,f.wechat.privateKey,'PLATFORM_TEST')})
       }
       if(String(url).includes('open.weixin.qq.com'))return new Response(JSON.stringify({errcode:0,openid:'openid-test'}),{status:200})
       throw new Error('unexpected fetch '+url)
     }
-    const payments=new PaymentService(f.store,{fetcher})
+    const payments=new PaymentService(f.store,{fetcher});payments.platformCertificates.set('PLATFORM_TEST',createPublicKey(f.wechat.publicKey));payments.certificateExpiresAt=Date.now()+11*60*60*1000
     const license=f.store.management.identity(f.instance,'owner')
     const created=await payments.createCheckout({license,version:'1.5.9',moduleId:'advanced_income_reports'},'https://auth.example.com')
     assert.equal(created.checkout.format,'cangshuo-checkout-v1')
@@ -63,11 +63,11 @@ test('hosted checkout creates a central order and paid notification issues the l
     const transaction={mchid:'1900000109',appid:'wx-official-test',out_trade_no:payment.out_trade_no,transaction_id:'420000TEST',trade_state:'SUCCESS',amount:{total:9900,currency:'CNY'}}
     const nonce='abcdefghijkl',associated='transaction';const cipher=createCipheriv('aes-256-gcm',Buffer.from(apiV3Key),Buffer.from(nonce));cipher.setAAD(Buffer.from(associated));const encrypted=Buffer.concat([cipher.update(JSON.stringify(transaction)),cipher.final(),cipher.getAuthTag()])
     const notification=JSON.stringify({id:'evt-test',event_type:'TRANSACTION.SUCCESS',resource:{algorithm:'AEAD_AES_256_GCM',ciphertext:encrypted.toString('base64'),nonce,associated_data:associated}})
-    const result=await payments.notification(signedWechatBody(notification,f.wechat.privateKey),notification)
+    const result=await payments.notification(signedWechatBody(notification,f.wechat.privateKey,'PLATFORM_TEST'),notification)
     assert.equal(result.paid,true)
     assert.equal(f.store.db.prepare('SELECT status FROM orders WHERE id=?').get(claims.orderId).status,'PAID')
     assert.equal(f.store.db.prepare('SELECT COUNT(*) AS count FROM licenses WHERE order_id=?').get(claims.orderId).count,1)
-    const replay=await payments.notification(signedWechatBody(notification,f.wechat.privateKey),notification)
+    const replay=await payments.notification(signedWechatBody(notification,f.wechat.privateKey,'PLATFORM_TEST'),notification)
     assert.equal(replay.paid,true);assert.equal(replay.idempotent,true)
     assert.equal(f.store.db.prepare('SELECT COUNT(*) AS count FROM licenses WHERE order_id=?').get(claims.orderId).count,1)
     assert.equal(requests.length,1)
