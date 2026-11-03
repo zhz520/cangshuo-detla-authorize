@@ -22,10 +22,10 @@
         <el-alert v-if="provider.id==='wechat_pay'" title="支付方式彼此独立" type="info" :closable="false"
           description="H5、小程序 JSAPI、公众号支付、Native 和 App 支付分别启用。系统不会根据浏览器或 User-Agent 自动切换支付方式；项目开放哪些方式，客户端就读取哪些方式。公众号支付字段仅在勾选公众号支付时校验。" />
         <el-alert v-if="paymentForms[provider.id]?.enabled" title="启用后，项目可把此通道设为默认支付接入。项目参数不会复制商户密钥；实例同步只获得通道名称和支付方式。" type="success" :closable="false"/>
-        <el-form label-position="top" class="payment-form" :disabled="saving">
-          <el-form-item v-for="field in provider.config_schema" :key="field.key" :label="field.label" :required="field.required"><el-input v-model="paymentForms[provider.id].config[field.key]" :type="field.type==='password'?'password':'text'" :show-password="field.type==='password'" autocomplete="new-password" :placeholder="field.type==='password'&&provider.secretsSet?'已配置，留空保留原值':field.required?'必填':'选填'"/><div v-if="field.help" style="margin-top:7px;color:#7b8796;font-size:12px;line-height:1.55">{{ field.help }}</div></el-form-item>
+        <el-form label-position="top" class="payment-form" :disabled="saving||!!uploadingKey">
+          <el-form-item v-for="field in provider.config_schema" :key="field.key" :label="field.label" :required="field.required"><div style="display:flex;align-items:center;gap:8px;width:100%"><el-input v-model="paymentForms[provider.id].config[field.key]" :type="field.type==='password'?'password':'text'" :show-password="field.type==='password'" autocomplete="new-password" :placeholder="field.type==='password'&&provider.secretsSet?'已配置，留空保留原值':field.placeholder||(field.required?'必填':'选填')"/><el-upload v-if="field.upload" :show-file-list="false" :http-request="request=>uploadPaymentKey(provider,field,request.file)" accept=".pem,.key,.txt" :disabled="saving||!!uploadingKey"><el-button :loading="uploadingKey===field.key">上传文件</el-button></el-upload></div><div v-if="field.help" style="margin-top:7px;color:#7b8796;font-size:12px;line-height:1.55">{{ field.help }}</div></el-form-item>
           <el-form-item label="系统启用的支付方式（可多选且相互独立）"><el-checkbox-group v-model="paymentForms[provider.id].methods"><el-checkbox v-for="method in paymentMethods" :key="method" :value="method">{{ paymentMethodLabels[method] }}</el-checkbox></el-checkbox-group><div style="margin-top:7px;color:#7b8796;font-size:12px;line-height:1.55">每种方式独立生效，不按浏览器类型自动隐藏或切换。字段只在校验所对应的支付方式时必填。</div></el-form-item>
-          <el-button type="primary" :loading="saving" @click="savePayment(provider)">保存支付通道</el-button>
+          <el-button type="primary" :loading="saving" :disabled="!!uploadingKey" @click="savePayment(provider)">保存支付通道</el-button>
         </el-form>
       </el-card>
       <h3 class="subheading">项目支付接入</h3><p class="muted">这里展示每个项目选择的支付接入与开放方式；修改入口在项目管理的项目设置中。</p>
@@ -51,7 +51,7 @@ import ListPager from './ListPager.vue'
 import {useRecords} from './records'
 const props=defineProps({page:String,data:Object,api:Function,refresh:Function}),emit=defineEmits(['publish'])
 const kinds={WEB:'网页系统',H5:'H5 / 移动网页',MINIAPP:'小程序项目',OTHER:'其他项目'},policies={PENDING:'待确认',STOP_ALL:'暂停全部业务请求',FINISH_EXISTING:'停止新业务，允许在途完成'},mailStatuses={PENDING:'待发送',RETRY:'等待重试',SENT:'已发送',FAILED:'发送失败'},paymentMethods=['H5','JSAPI','OFFICIAL','NATIVE','APP'],paymentMethodLabels={H5:'H5 网页支付',JSAPI:'小程序支付（JSAPI）',OFFICIAL:'公众号支付（JSAPI）',NATIVE:'Native 扫码支付',APP:'App 支付'}
-const visible=ref(false),kind=ref('product'),editing=ref(false),form=reactive({}),saving=ref(false),syncing=ref(''),mail=reactive({}),paymentForms=reactive({}),productId=ref('detla'),product=computed(()=>props.data.products.find(row=>row.id===productId.value)),itemsVisible=ref(false),items=ref([]),release=ref(null)
+const visible=ref(false),kind=ref('product'),editing=ref(false),form=reactive({}),saving=ref(false),syncing=ref(''),mail=reactive({}),paymentForms=reactive({}),uploadingKey=ref(''),productId=ref('detla'),product=computed(()=>props.data.products.find(row=>row.id===productId.value)),itemsVisible=ref(false),items=ref([]),release=ref(null)
 const mailSnapshot=ref(''),paymentSnapshots=reactive({}),recipientDraft=ref('')
 function setMail(value){const operatorEmails=Array.isArray(value?.operatorEmails)?value.operatorEmails:(value?.operatorEmail?[value.operatorEmail]:[]);const normalized={security:'TLS',port:465,senderName:'沧烁授权中心',...value,operatorEmails,password:''};delete normalized.operatorEmail;Object.assign(mail,normalized);mailSnapshot.value=JSON.stringify(mail)}
 function setPayment(provider){paymentForms[provider.id]={enabled:provider.enabled,config:{...(provider.config||{})},methods:[...(provider.methods||[])]};paymentSnapshots[provider.id]=JSON.stringify(paymentForms[provider.id])}
@@ -72,6 +72,18 @@ async function run(action){if(saving.value)return;saving.value=true;try{await ac
 function save(){return run(async()=>{const body={...form,depositAmountCents:yuanToCents(form.depositYuan,'项目定金'),balanceAmountCents:yuanToCents(form.balanceYuan,'项目尾款'),contractNote:form.contractNote||'',maintenanceUntil:form.until.toISOString()};await props.api(kind.value==='product'?(editing.value?'/products/'+form.id:'/products'):(editing.value?'/projects/'+form.id:'/projects'),{method:editing.value?'PUT':'POST',body});visible.value=false})}
 function addRecipient(){const candidates=String(recipientDraft.value||'').split(/[,;\n]+/).map(value=>value.trim()).filter(Boolean);if(!candidates.length)return true;const invalid=candidates.find(value=>!/^[^\s<>@,;]+@[^\s<>@,;]+\.[^\s<>@,;]+$/.test(value)||value.length>254);if(invalid){ElMessage.warning('邮箱格式不正确：'+invalid);return false}const existing=Array.isArray(mail.operatorEmails)?mail.operatorEmails:[];const seen=new Set(existing.map(value=>value.toLowerCase()));for(const value of candidates)if(!seen.has(value.toLowerCase())){seen.add(value.toLowerCase());existing.push(value)}if(existing.length>20){ElMessage.warning('运营通知收件邮箱最多配置 20 个');return false}mail.operatorEmails=existing;recipientDraft.value='';return true}function removeRecipient(address){mail.operatorEmails=(mail.operatorEmails||[]).filter(value=>value!==address)}function saveMail(){if(!addRecipient())return;if(mail.enabled&&!mail.operatorEmails?.length){ElMessage.warning('启用发信前请至少添加一个运营通知收件邮箱');return}return run(async()=>setMail(await props.api('/mail/settings',{method:'PUT',body:mail})))}
 function savePayment(provider){return run(async()=>setPayment(await props.api('/payments/'+provider.id,{method:'PUT',body:paymentForms[provider.id]})))}
+async function uploadPaymentKey(provider,field,file){
+  if(!file||uploadingKey.value)return
+  if(file.size>32768){ElMessage.error('密钥文件不能超过 32KB');return}
+  uploadingKey.value=field.key
+  try{
+    const contentBase64=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(',')[1]||'');reader.onerror=()=>reject(new Error('读取文件失败'));reader.readAsDataURL(file)})
+    const result=await props.api('/payment-keys/upload',{method:'POST',body:{kind:field.upload,filename:file.name,contentBase64}})
+    paymentForms[provider.id].config[field.key]=result.path
+    ElMessage.success('文件已上传，请点击“保存支付通道”完成配置')
+  }catch(error){ElMessage.error(error?.message||'密钥文件上传失败')}
+  finally{uploadingKey.value=''}
+}
 function paymentMethodsFor(id){return props.data.paymentProviders.find(provider=>provider.id===id)?.methods||[]}
 async function testMail(){if(saving.value)return;try{const {value}=await ElMessageBox.prompt('填写一个或多个测试收件邮箱，使用逗号、分号或换行分隔。','发送测试邮件',{inputValue:(mail.operatorEmails||[]).join(', '),inputPlaceholder:'ops@example.com'});saving.value=true;await props.api('/mail/test',{method:'POST',body:{recipient:value}});ElMessage.success('测试邮件已进入发送队列');await props.refresh()}catch(error){if(error?.message)ElMessage.error(error.message)}finally{saving.value=false}}
 async function sync(id){if(syncing.value)return;syncing.value=id;try{await props.api('/products/'+id+'/sync',{method:'POST',body:{}});ElMessage.success('GitHub 正式版已同步')}catch(error){ElMessage.error(error.message)}finally{await props.refresh();syncing.value=''}}

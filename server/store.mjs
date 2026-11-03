@@ -56,7 +56,8 @@ export class AuthorityStore {
     this.key = createPrivateKey(privateKey)
     if (this.key.asymmetricKeyType !== 'ed25519') throw new Error('授权私钥必须为 Ed25519')
     this.publicKey = createPublicKey(this.key).export({ type: 'spki', format: 'pem' })
-    if (database !== ':memory:') mkdirSync(path.dirname(path.resolve(database)), { recursive: true })
+    this.dataDirectory = database === ':memory:' ? null : path.dirname(path.resolve(database))
+    if (this.dataDirectory) mkdirSync(this.dataDirectory, { recursive: true })
     this.db = new DatabaseSync(database)
     this.db.exec(`PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);

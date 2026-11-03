@@ -1,4 +1,7 @@
-import { randomUUID, sign } from 'node:crypto'
+import { createPrivateKey, createPublicKey, randomUUID, sign } from 'node:crypto'
+import { chmodSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { isIP } from 'node:net'
+import path from 'node:path'
 import { fail, identifier, integer, text, timestamp, compareVersions } from './store.mjs'
 
 export const DEFAULT_PRODUCT = 'detla'
@@ -19,13 +22,33 @@ const WECHAT_PAY_FIELDS = [
   {key:'merchantId',label:'微信支付商户号',type:'text',required:true},
   {key:'apiV3Key',label:'API v3 密钥',type:'password',required:true,help:'微信支付商户平台 API 安全中设置的 32 字节密钥。'},
   {key:'merchantSerialNo',label:'商户证书序列号',type:'text',required:true},
-  {key:'privateKeyPath',label:'商户私钥路径',type:'text',required:true},
+  {key:'privateKeyPath',label:'商户私钥文件',type:'text',required:true,upload:'private',help:'上传微信支付商户平台下载的 apiclient_key.pem；上传后自动填写服务器受保护路径。'},
   {key:'publicKeyId',label:'微信支付公钥 ID',type:'text',required:true},
-  {key:'publicKeyPath',label:'微信支付公钥路径',type:'text',required:true},
-  {key:'notifyUrl',label:'支付回调地址',type:'text',required:true},
+  {key:'publicKeyPath',label:'微信支付公钥文件',type:'text',required:true,upload:'public',help:'上传当前商户号在微信支付平台下载的 pub_key.pem；上传后自动填写服务器受保护路径。'},
+  {key:'notifyUrl',label:'支付结果回调地址（Notify URL）',type:'text',required:true,placeholder:'https://jgsapi.kk520yy.com/api/pay/wx/notify',help:'这是客户端电竞系统的公网 HTTPS 地址，固定路径为 /api/pay/wx/notify。微信服务器会主动访问，不能填授权中心、localhost、内网 IP 或需要登录的地址。'},
+  {key:'refundNotifyUrl',label:'退款结果回调地址（可选）',type:'text',required:false,placeholder:'https://jgsapi.kk520yy.com/api/pay/wx/refund-notify',help:'这是客户端接收退款结果的公网 HTTPS 地址，固定路径为 /api/pay/wx/refund-notify；留空时客户端按支付回调域名推导。'},
   {key:'h5AppName',label:'H5 支付展示名称',type:'text',required:false,help:'仅在项目开放 H5 支付时使用。'},
   {key:'h5Type',label:'H5 客户端类型（WAP/IOS/ANDROID）',type:'text',required:false,help:'普通手机浏览器使用 WAP。'}
 ]
+
+function paymentCallbackUrl(value,label,expectedPath) {
+  let url
+  try { url=new URL(value) } catch { fail(`${label}格式不正确，请填写完整的 HTTPS 地址`) }
+  if(url.protocol!=='https:'||url.username||url.password||url.search||url.hash)fail(`${label}必须是不含账号、参数和锚点的 HTTPS 地址`)
+  if(url.pathname.replace(/\/+$/,'')!==expectedPath)fail(`${label}路径必须为 ${expectedPath}`)
+  const host=url.hostname.toLowerCase().replace(/^\[|\]$/g,'')
+  if(host==='localhost'||host.endsWith('.localhost')||host.endsWith('.local'))fail(`${label}必须使用公网域名`)
+  const version=isIP(host)
+  if(version===4){
+    const [a,b]=host.split('.').map(Number)
+    if(a===10||a===127||a===0||(a===169&&b===254)||(a===172&&b>=16&&b<=31)||(a===192&&b===168))fail(`${label}不能使用内网或本机 IP`)
+  }
+  if(version===6){
+    const normalized=host.toLowerCase()
+    if(normalized==='::'||normalized==='::1'||normalized.startsWith('fc')||normalized.startsWith('fd')||normalized.startsWith('fe8')||normalized.startsWith('fe9')||normalized.startsWith('fea')||normalized.startsWith('feb'))fail(`${label}不能使用内网或本机 IP`)
+  }
+  return url.toString()
+}
 export function emailAddress(value) {
   if (!/^[^\s<>@,;]+@[^\s<>@,;]+\.[^\s<>@,;]+$/.test(String(value || '')) || value.length > 254) fail('邮箱地址格式不正确')
   return value
@@ -274,7 +297,8 @@ export class Management {
         if(!config[field.key])fail(`启用${field.label}对应的支付方式前请填写${field.label}`)
     }
     if(config.officialReturnOrigin){try{const url=new URL(config.officialReturnOrigin);if(url.protocol!=='https:'||url.username||url.password||url.search||url.hash||(url.pathname&&url.pathname!=='/'))fail('公众号支付站点 Origin 必须是不含路径的 HTTPS 地址')}catch{fail('公众号支付站点 Origin 必须是不含路径的 HTTPS 地址')}}
-    if(config.notifyUrl){try{const url=new URL(config.notifyUrl);if(url.protocol!=='https:'||url.username||url.password)fail('支付回调地址必须是 HTTPS 地址')}catch{fail('支付回调地址必须是 HTTPS 地址')}}
+    if(config.notifyUrl)config.notifyUrl=paymentCallbackUrl(config.notifyUrl,'支付回调地址','/api/pay/wx/notify')
+    if(config.refundNotifyUrl)config.refundNotifyUrl=paymentCallbackUrl(config.refundNotifyUrl,'退款回调地址','/api/pay/wx/refund-notify')
     if(config.apiV3Key && Buffer.byteLength(config.apiV3Key,'utf8')!==32) fail('微信支付 API v3 密钥必须为 32 字节')
     if(config.h5Type){config.h5Type=config.h5Type.toUpperCase();if(!['WAP','IOS','ANDROID'].includes(config.h5Type))fail('H5 客户端类型只能填写 WAP、IOS 或 ANDROID')}
     return this.store.transaction(()=>{
@@ -282,6 +306,41 @@ export class Management {
       this.store.audit(actor,'UPDATE_PAYMENT_PROVIDER',id,{enabled,methods,fields:Object.keys(config)})
       return this.paymentProviders().find(row=>row.id===id)
     })
+  }
+  uploadPaymentKey(body,actor) {
+    if(!body||typeof body!=='object'||Array.isArray(body))fail('上传内容格式不正确')
+    if(!this.store.dataDirectory)fail('当前运行环境不支持密钥文件上传')
+    const kind=body.kind
+    if(!['private','public'].includes(kind))fail('密钥文件类型不正确')
+    if(typeof body.filename!=='string'||body.filename.length>255||!/[.](?:pem|key|txt)$/i.test(body.filename))fail('仅支持 pem、key 或 txt 格式的密钥文件')
+    if(typeof body.contentBase64!=='string'||body.contentBase64.length>60000||!/^[A-Za-z0-9+/]+={0,2}$/.test(body.contentBase64))fail('密钥文件内容不正确')
+    const bytes=Buffer.from(body.contentBase64,'base64')
+    if(!bytes.length||bytes.length>32*1024)fail('密钥文件大小须在 32KB 以内')
+    const content=bytes.toString('utf8').trim()+'\n'
+    try {
+      if(kind==='private') {
+        if(!content.includes('-----BEGIN PRIVATE KEY-----')||!content.includes('-----END PRIVATE KEY-----'))fail('私钥文件必须为 PEM PKCS#8 格式')
+        createPrivateKey(content)
+      } else {
+        if(!content.includes('-----BEGIN PUBLIC KEY-----')||!content.includes('-----END PUBLIC KEY-----'))fail('公钥文件必须为 PEM 格式')
+        createPublicKey(content)
+      }
+    } catch(error) {
+      if(error instanceof Error&&error.status)fail(error.message,error.status)
+      fail(kind==='private'?'商户私钥内容无效':'微信支付公钥内容无效')
+    }
+    const directory=path.join(this.store.dataDirectory,'payment-keys','wechat')
+    mkdirSync(directory,{recursive:true,mode:0o700})
+    try{chmodSync(directory,0o700)}catch{}
+    const name=kind==='private'?'merchant-private-key.pem':'wechat-pay-public-key.pem'
+    const target=path.join(directory,name),temporary=path.join(directory,'.upload-'+randomUUID())
+    try {
+      writeFileSync(temporary,content,{encoding:'utf8',mode:0o600,flag:'wx'})
+      renameSync(temporary,target)
+      try{chmodSync(target,0o600)}catch{}
+    } finally { try{unlinkSync(temporary)}catch{} }
+    this.store.audit(actor,'UPLOAD_PAYMENT_KEY',kind,{filename:body.filename,bytes:bytes.length})
+    return {kind,path:target,bytes:bytes.length}
   }
   saveMailSettings(body, actor) {
     const previous = this.mailSettings(true)

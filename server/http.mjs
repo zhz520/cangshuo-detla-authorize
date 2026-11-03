@@ -106,6 +106,7 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
         if ((match = route.match(/^\/api\/entitlements\/([^/]+)\/([^/]+)$/)) && method === 'PUT') return json(store.updateEntitlement(decodeURIComponent(match[1]),decodeURIComponent(match[2]),body,session.username))
         if ((match = route.match(/^\/api\/entitlements\/([^/]+)\/([^/]+)$/)) && method === 'DELETE') return json(store.deleteEntitlement(decodeURIComponent(match[1]),decodeURIComponent(match[2]),session.username))
         if ((match = route.match(/^\/api\/payments\/([\w-]+)$/)) && method === 'PUT') return json(store.management.savePaymentProvider(match[1],body,session.username))
+        if (route === '/api/payment-keys/upload' && method === 'POST') return json(store.management.uploadPaymentKey(body,session.username),201)
         if (route === '/api/mail/test' && method === 'POST') return json(mailer.test(body,session.username))
         if ((match=route.match(/^\/api\/products\/([\w-]+)$/)) && method==='PUT') return json(store.management.saveProduct(match[1],body,session.username))
         if ((match=route.match(/^\/api\/customers\/([\w-]+)$/)) && method==='PUT') return json(store.updateCustomer(match[1],body,session.username))
