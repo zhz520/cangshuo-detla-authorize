@@ -18,7 +18,7 @@ const WECHAT_PAY_FIELDS = [
   {key:'appId',label:'微信应用 AppID（H5 / 小程序 / Native）',type:'text',required:false,requiredFor:['H5','JSAPI','NATIVE','APP'],help:'选择 H5、小程序、Native 或 App 支付时需要；仅开通公众号支付时可留空。'},
   {key:'officialAppId',label:'公众号支付 AppID',type:'text',required:false,requiredFor:['OFFICIAL'],help:'仅公众号支付使用，可与其他微信应用 AppID 不同。'},
   {key:'officialAppSecret',label:'公众号 AppSecret',type:'password',required:false,requiredFor:['OFFICIAL'],help:'仅用于公众号网页授权换取 OpenID，保存后不回显。'},
-  {key:'officialReturnOrigin',label:'授权中心支付站点 Origin',type:'text',required:false,requiredFor:['OFFICIAL'],help:'填写授权中心收款页的 HTTPS Origin，例如 https://auth.kk520yy.com；该域名需在公众号网页授权域名中配置。'},
+  {key:'officialReturnOrigin',label:'授权中心支付站点 Origin',type:'text',required:false,requiredFor:['OFFICIAL'],help:'填写授权中心收款页的 HTTPS Origin，例如 https://auth.kk520yy.com；该域名需加入公众号“网页授权域名”，并把“https://该域名/api/pay/wx/”加入微信支付商户平台的 JSAPI 支付授权目录。'},
   {key:'merchantId',label:'微信支付商户号',type:'text',required:true},
   {key:'apiV3Key',label:'API v3 密钥',type:'password',required:true,help:'微信支付商户平台 API 安全中设置的 32 字节密钥。'},
   {key:'merchantSerialNo',label:'商户证书序列号',type:'text',required:true},

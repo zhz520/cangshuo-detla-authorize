@@ -55,6 +55,10 @@ test('hosted checkout creates a central order and paid notification issues the l
     const token=claims.checkoutUrl.split('/').pop(),summary=payments.summary(token)
     assert.equal(summary.moduleName,'收益对比分析');assert.equal(summary.amountCents,9900);assert.equal(summary.status,'UNPAID');assert.deepEqual(summary.methods,['OFFICIAL'])
 
+    const oauth=new URL(payments.oauthUrl(token,'https://wrong-proxy.example.com'))
+    assert.equal(oauth.searchParams.get('appid'),'wx-official-test')
+    assert.equal(oauth.searchParams.get('redirect_uri'),`https://auth.example.com/api/pay/wx/oauth-callback?token=${token}`)
+
     const payParams=await payments.prepayOfficial(token,'openid-test')
     assert.equal(payParams.appId,'wx-official-test');assert.equal(payParams.package,'prepay_id=wx-prepay-test')
     const payment=f.store.db.prepare('SELECT * FROM online_payments WHERE order_id=?').get(claims.orderId)
