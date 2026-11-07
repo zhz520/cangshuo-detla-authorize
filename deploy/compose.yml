@@ -2,7 +2,7 @@ name: cangshuo-detla-authority
 services:
   authority:
     build: ..
-    image: cangshuo-detla-authority:0.6.6-payment-ui-r1
+    image: cangshuo-detla-authority:0.6.7-premium-ui-r1
     restart: unless-stopped
     environment:
       DATA_DIR: /app/data
