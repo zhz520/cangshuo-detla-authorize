@@ -334,7 +334,22 @@ export class AuthorityStore {
     const price = body.priceCents === undefined ? existing.price_cents : body.priceCents == null ? null : integer(body.priceCents, '价格（分）')
     const days = body.termDays==null?existing.term_days:integer(body.termDays, '授权天数', 0, 3660), status = body.status??existing.status
     if (!['DRAFT', 'ACTIVE'].includes(status) || (status === 'ACTIVE' && price == null)) fail('模块上架前必须配置价格')
-    return this.transaction(() => { this.db.prepare('UPDATE modules SET name=?,description=?,price_cents=?,term_days=?,status=?,min_version=?,product_id=? WHERE id=?').run(name,description,price,days,status,minVersion,productId,id); this.audit(actor, 'UPDATE_MODULE', id, { productId,name,priceCents: price, termDays: days, status,minVersion }); return { id } })
+    const quoteChanged = price !== existing.price_cents || days !== existing.term_days
+      || status !== existing.status || minVersion !== existing.min_version || productId !== existing.product_id
+    return this.transaction(() => {
+      this.db.prepare('UPDATE modules SET name=?,description=?,price_cents=?,term_days=?,status=?,min_version=?,product_id=? WHERE id=?').run(name,description,price,days,status,minVersion,productId,id)
+      if (quoteChanged) {
+        const cancelledAt = now()
+        const unpaid = this.db.prepare("SELECT id FROM orders WHERE module_id=? AND status='UNPAID' AND granted_at IS NULL").all(id)
+        for (const order of unpaid) {
+          this.db.prepare("UPDATE orders SET status='CANCELLED',cancel_reason=?,cancelled_at=? WHERE id=? AND status='UNPAID' AND granted_at IS NULL")
+            .run('功能价格、授权周期或上架条件已更新，请返回客户端重新下单', cancelledAt, order.id)
+          this.audit(actor, 'CANCEL_ORDER', order.id, { reason: 'MODULE_QUOTE_CHANGED', previousStatus: 'UNPAID' })
+        }
+      }
+      this.audit(actor, 'UPDATE_MODULE', id, { productId,name,priceCents: price, termDays: days, status,minVersion })
+      return { id }
+    })
   }
   deleteModule(id,actor) {
     if(!this.db.prepare('SELECT id FROM modules WHERE id=?').get(id))fail('模块不存在',404)

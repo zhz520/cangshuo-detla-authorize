@@ -38,7 +38,8 @@ test('orders require a configured price, a compatible instance and payment befor
  }finally{store.close()}
 })
 test('renewals retain price and entitlement expiry snapshots under the maintenance cap',()=>{
- const {store}=fixture();try{const id=instance(store);moduleReady(store);const order=store.createOrder({instanceId:id,moduleId:'advanced_income_reports'},'owner');store.updateModule('advanced_income_reports',{priceCents:19900,termDays:30,status:'ACTIVE'},'owner');assert.equal(store.lists().orders[0].amount_cents,9900)
+ const {store}=fixture();try{const id=instance(store);moduleReady(store);const stale=store.createOrder({instanceId:id,moduleId:'advanced_income_reports'},'owner');store.updateModule('advanced_income_reports',{priceCents:19900,termDays:30,status:'ACTIVE'},'owner');const cancelled=store.lists().orders.find(row=>row.id===stale.id);assert.equal(cancelled.amount_cents,9900);assert.equal(cancelled.status,'CANCELLED')
+ const order=store.createOrder({instanceId:id,moduleId:'advanced_income_reports'},'owner');assert.equal(order.priceCents,19900)
  store.markPaid(order.id,{reference:'test'},'owner');const initial=JSON.parse(Buffer.from(store.issue(order.id,'owner').envelope.payload,'base64url'))
  const next=store.createOrder({instanceId:id,moduleId:'advanced_income_reports'},'owner');store.markPaid(next.id,{reference:'renewal-test'},'owner');const renewed=store.issue(next.id,'owner'),claims=JSON.parse(Buffer.from(renewed.envelope.payload,'base64url'))
  assert.equal(claims.expiresAt,initial.expiresAt);assert.equal(claims.featureExpiresAt.advanced_income_reports,store.lists().orders.find(row=>row.id===next.id).valid_until)

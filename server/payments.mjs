@@ -12,6 +12,13 @@ const hash = value => createHash('sha256').update(value).digest('hex')
 const html = value => String(value ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;')
 const iso = ms => ms == null ? null : new Date(ms).toISOString()
 
+function staleUnpaidCheckout(order, module, instance, productId) {
+  if (!order || order.status !== 'UNPAID' || order.granted_at) return false
+  if (!module || module.status !== 'ACTIVE' || module.price_cents == null || module.product_id !== productId) return true
+  if (order.amount_cents !== module.price_cents || order.term_days !== module.term_days) return true
+  return Boolean(instance.client_version && compareVersions(instance.client_version, module.min_version) < 0)
+}
+
 export class PaymentService {
   constructor(store, { fetcher = fetch, qr = QRCode } = {}) {
     this.store = store; this.fetcher = fetcher; this.qr = qr
@@ -24,7 +31,7 @@ export class PaymentService {
     const version = text(body.version, '客户端版本', 80)
     compareVersions(version, version)
     const { instance } = this.store.verifyClientLicense(body.license)
-    const provider = this.store.db.prepare(`SELECT p.payment_provider,p.payment_methods,pay.enabled,pay.methods
+    const provider = this.store.db.prepare(`SELECT p.product_id,p.payment_provider,p.payment_methods,pay.enabled,pay.methods
       FROM instances i JOIN projects p ON p.id=i.project_id LEFT JOIN payment_providers pay ON pay.id=p.payment_provider WHERE i.id=?`).get(instance.id)
     if (!provider?.payment_provider || provider.enabled !== 1) fail('授权中心尚未启用可用于购买功能的支付通道', 503)
     const methods = JSON.parse(provider.payment_methods || '[]').filter(method => JSON.parse(provider.methods || '[]').includes(method) && ALLOWED_METHODS.has(method))
@@ -37,6 +44,11 @@ export class PaymentService {
     if (open) {
       order = this.store.db.prepare('SELECT * FROM orders WHERE id=?').get(open.id)
       if (order.status === 'CANCELLED') { open = null; order = null }
+    }
+    const currentModule = this.store.db.prepare('SELECT product_id, price_cents, term_days, status, min_version FROM modules WHERE id=?').get(moduleId)
+    if (staleUnpaidCheckout(order, currentModule, instance, provider.product_id)) {
+      this.store.cancelOrder(order.id, { reason: '功能价格、授权周期或上架条件已更新，请重新下单' }, 'system')
+      order = null
     }
     if (!order) {
       const created = this.store.createOrder({ instanceId: instance.id, moduleId }, 'client')

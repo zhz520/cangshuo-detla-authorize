@@ -86,3 +86,33 @@ test('client checkout refuses an unsigned or foreign license without creating an
     assert.equal(f.store.lists().orders.length,0)
   }finally{f.cleanup()}
 })
+
+test('stale unpaid quotes are cancelled and checkout always uses the current price',async()=>{
+  const f=fixture();try{
+    const payments=new PaymentService(f.store)
+    const license=f.store.management.identity(f.instance,'owner')
+
+    // Simulate an order created by the previous release before its price changed.
+    const old=f.store.createOrder({instanceId:f.instance,moduleId:'advanced_income_reports'},'client')
+    f.store.db.prepare("UPDATE modules SET price_cents=19900 WHERE id='advanced_income_reports'").run()
+    const repriced=await payments.createCheckout({license,version:'1.6.1',moduleId:'advanced_income_reports'},'https://auth.example.com')
+    const repricedClaims=JSON.parse(Buffer.from(repriced.checkout.payload,'base64url'))
+    assert.equal(repricedClaims.amountCents,19900)
+    assert.notEqual(repricedClaims.orderId,old.id)
+    assert.equal(f.store.db.prepare('SELECT status FROM orders WHERE id=?').get(old.id).status,'CANCELLED')
+
+    // A later operator price change invalidates the current unpaid checkout immediately.
+    f.store.updateModule('advanced_income_reports',{priceCents:24900,termDays:365,status:'ACTIVE'},'owner')
+    const token=repricedClaims.checkoutUrl.split('/').pop()
+    assert.equal(payments.summary(token).status,'CANCELLED')
+    const current=await payments.createCheckout({license,version:'1.6.1',moduleId:'advanced_income_reports'},'https://auth.example.com')
+    const currentClaims=JSON.parse(Buffer.from(current.checkout.payload,'base64url'))
+    assert.equal(currentClaims.amountCents,24900)
+    assert.notEqual(currentClaims.orderId,repricedClaims.orderId)
+
+    // A paid order remains an immutable quote snapshot and is never cancelled by later repricing.
+    f.store.markPaid(currentClaims.orderId,{reference:'paid-quote-test'},'owner')
+    f.store.updateModule('advanced_income_reports',{priceCents:29900,termDays:365,status:'ACTIVE'},'owner')
+    assert.equal(f.store.db.prepare('SELECT status FROM orders WHERE id=?').get(currentClaims.orderId).status,'PAID')
+  }finally{f.cleanup()}
+})
