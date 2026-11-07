@@ -30,7 +30,7 @@
           <el-tag :type="paymentForms[provider.id]?.enabled ? 'success' : 'info'" effect="plain">
             {{ paymentForms[provider.id]?.enabled ? '已启用' : '已停用' }}
           </el-tag>
-          <el-switch v-model="paymentForms[provider.id].enabled" active-text="系统启用" inactive-text="停用" />
+          <el-switch v-model="paymentForms[provider.id].enabled" :aria-label="`系统启用${provider.name}`" />
         </div>
       </header>
 
