@@ -21,6 +21,9 @@ test('operations HTTP routes support a complete isolated customer/project/licens
   const project=(await call('/api/projects','POST',{customerId:'http-customer',productId:'other',name:'独立项目',maintenanceUntil:'2030-12-01T00:00:00Z'},201)).result.id
   await call('/api/projects/'+project,'PUT',{name:'独立项目',maintenanceUntil:'2031-12-01T00:00:00Z',depositAmountCents:10000,balanceAmountCents:20000})
   const id=randomUUID();await call('/api/instances','POST',{id,customerId:'http-customer',projectId:project,name:'接口实例',domains:['http.example.com']},201)
+  const runtime=(await call('/api/runtime/tenants')).result
+  const runtimeTenant=runtime.tenants.find(row=>row.tenantId===id)
+  assert.equal(runtimeTenant.customerId,'http-customer');assert.equal(runtimeTenant.platformInstanceId,id);assert.deepEqual(runtimeTenant.hosts,['http.example.com'])
   await call('/api/instances/'+id,'PUT',{name:'接口实例',domains:['http.example.com'],maintenanceUntil:'2031-12-01T00:00:00Z'})
   const identity=(await call('/api/instances/'+id+'/identity')).result
   await call('/api/client/report','POST',{license:identity,version:'1.2.0'})

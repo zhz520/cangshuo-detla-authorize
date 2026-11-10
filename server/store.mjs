@@ -160,6 +160,34 @@ export class AuthorityStore {
       ...this.management.lists()
     }
   }
+  runtimeRegistry() {
+    const rows=this.db.prepare(`SELECT i.id,i.customer_id,i.project_id,i.name,i.domains,i.maintenance_until,
+      p.product_id,p.status AS project_status,c.status AS customer_status
+      FROM instances i JOIN projects p ON p.id=i.project_id JOIN customers c ON c.id=i.customer_id
+      ORDER BY i.id`).all()
+    return {
+      formatVersion:1,
+      generatedAt:now(),
+      tenants:rows.map(row=>{
+        const domains=JSON.parse(row.domains||'[]')
+        const hosts=domains.filter(host=>!host.startsWith('*.'))
+        const wildcardDomains=domains.filter(host=>host.startsWith('*.'))
+        return {
+          tenantId:row.id,
+          name:row.name,
+          customerId:row.customer_id,
+          projectId:row.project_id,
+          productId:row.product_id,
+          platformCustomerId:row.customer_id,
+          platformInstanceId:row.id,
+          hosts,
+          wildcardDomains,
+          maintenanceUntil:row.maintenance_until,
+          active:row.customer_status==='ACTIVE'&&row.project_status==='ACTIVE'
+        }
+      })
+    }
+  }
   createCustomer(body, actor) {
     const id = identifier(body.id, '客户编号'), name = text(body.name, '客户名称', 80), note = String(body.note || '').slice(0, 500)
     return this.transaction(() => { this.db.prepare('INSERT INTO customers VALUES (?,?,?,?,?)').run(id, name, 'ACTIVE', note, now()); this.audit(actor, 'CREATE_CUSTOMER', id); return { id } })
