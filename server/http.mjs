@@ -129,6 +129,7 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
         if (!['GET', 'HEAD'].includes(method) && !equal(request.headers['x-csrf-token'], session.csrf)) fail('请求校验失败，请刷新页面', 403)
         if (route === '/api/logout' && method === 'POST') { store.logout(token); response.setHeader('Set-Cookie', 'authority_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'); return json({ ok: true }) }
         if (route === '/api/data' && method === 'GET') return json(store.lists())
+        if (route === '/api/runtime/tenants' && method === 'GET') return json(store.runtimeRegistry())
         if (route === '/api/service-groups' && method === 'GET') return json(store.serviceGroupService.list())
         if (route === '/api/service-groups' && method === 'POST') return json(store.serviceGroupService.save(body, session.username), 201)
         let match
