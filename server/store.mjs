@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync, chmodSync, existsSync } from 'node:fs'
 import path from 'node:path'
 import { Management, DEFAULT_PRODUCT, publicReleaseText } from './management.mjs'
 import { Releases } from './releases.mjs'
+import { ServiceGroups } from './service-groups.mjs'
 
 export class HttpError extends Error { constructor(status, message) { super(message); this.status = status } }
 export const fail = (message, status = 400) => { throw new HttpError(status, message) }
@@ -27,6 +28,12 @@ export function domains(value) {
   const values = Array.isArray(value) ? value : String(value || '').split(/[\s,，]+/)
   const result = [...new Set(values.filter(Boolean).map(item => domainName(item)))]
   if (!result.length || result.length > 20) fail('至少填写一个授权域名，最多 20 个')
+  return result
+}
+export function runtimeTenantId(value) {
+  if (value === undefined || value === null || value === '') return ''
+  const result = text(value, '运行租户编号', 48)
+  if (!/^[a-z0-9][a-z0-9-]{0,47}$/.test(result)) fail('运行租户编号只能包含小写字母、数字和短横线')
   return result
 }
 export function timestamp(value, label) {
@@ -64,7 +71,7 @@ export class AuthorityStore {
       CREATE TABLE IF NOT EXISTS owners (username TEXT PRIMARY KEY, password_hash TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, csrf TEXT NOT NULL, username TEXT NOT NULL, expires_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS customers (id TEXT PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'ACTIVE', note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS instances (id TEXT PRIMARY KEY, customer_id TEXT NOT NULL REFERENCES customers(id), name TEXT NOT NULL, domain TEXT NOT NULL DEFAULT '', domains TEXT NOT NULL DEFAULT '[]', maintenance_until TEXT NOT NULL DEFAULT '', client_version TEXT NOT NULL DEFAULT '', last_seen_at TEXT, created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS instances (id TEXT PRIMARY KEY, customer_id TEXT NOT NULL REFERENCES customers(id), name TEXT NOT NULL, domain TEXT NOT NULL DEFAULT '', domains TEXT NOT NULL DEFAULT '[]', maintenance_until TEXT NOT NULL DEFAULT '', client_version TEXT NOT NULL DEFAULT '', last_seen_at TEXT, runtime_tenant_id TEXT, created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS modules (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL, price_cents INTEGER CHECK(price_cents>=0), term_days INTEGER NOT NULL, status TEXT NOT NULL, min_version TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS orders (id TEXT PRIMARY KEY, instance_id TEXT NOT NULL REFERENCES instances(id), module_id TEXT NOT NULL REFERENCES modules(id), amount_cents INTEGER NOT NULL, term_days INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'UNPAID', payment_reference TEXT, paid_at TEXT, granted_at TEXT, valid_from TEXT, valid_until TEXT, cancel_reason TEXT, cancelled_at TEXT, refund_reference TEXT, refunded_at TEXT, created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS entitlements (instance_id TEXT NOT NULL REFERENCES instances(id), module_id TEXT NOT NULL REFERENCES modules(id), valid_from TEXT NOT NULL, valid_until TEXT, enabled INTEGER NOT NULL DEFAULT 1, PRIMARY KEY(instance_id,module_id));
@@ -72,11 +79,16 @@ export class AuthorityStore {
       CREATE TABLE IF NOT EXISTS releases (version TEXT PRIMARY KEY, channel TEXT NOT NULL, notes TEXT NOT NULL, source_url TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'DRAFT', created_at TEXT NOT NULL, published_at TEXT);
       CREATE TABLE IF NOT EXISTS plugins (id TEXT PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL, description TEXT NOT NULL, config_schema TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'ACTIVE', created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS instance_plugins (instance_id TEXT NOT NULL REFERENCES instances(id), plugin_id TEXT NOT NULL REFERENCES plugins(id), enabled INTEGER NOT NULL DEFAULT 0, config TEXT NOT NULL DEFAULT '{}', updated_at TEXT NOT NULL, PRIMARY KEY(instance_id,plugin_id));
-      CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL, detail TEXT NOT NULL, created_at TEXT NOT NULL);`)
+      CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL, detail TEXT NOT NULL, created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS service_groups (id TEXT PRIMARY KEY, product_id TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'ACTIVE', maintenance_max_minutes INTEGER NOT NULL DEFAULT 240, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS service_group_instances (group_id TEXT NOT NULL, instance_id TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, PRIMARY KEY(group_id,instance_id));
+      CREATE TABLE IF NOT EXISTS shared_release_plans (id TEXT PRIMARY KEY, group_id TEXT NOT NULL, product_id TEXT NOT NULL, target_version TEXT NOT NULL, from_version TEXT NOT NULL, tenants TEXT NOT NULL, window_start TEXT NOT NULL, window_end TEXT NOT NULL, envelope TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'CREATED', created_by TEXT NOT NULL, created_at TEXT NOT NULL);`)
     const instanceColumns = new Set(this.db.prepare('PRAGMA table_info(instances)').all().map(column => column.name))
     if (!instanceColumns.has('domains')) this.db.exec("ALTER TABLE instances ADD COLUMN domains TEXT NOT NULL DEFAULT '[]'")
     if (!instanceColumns.has('maintenance_until')) this.db.exec("ALTER TABLE instances ADD COLUMN maintenance_until TEXT NOT NULL DEFAULT ''")
     if (!instanceColumns.has('last_seen_at')) this.db.exec('ALTER TABLE instances ADD COLUMN last_seen_at TEXT')
+    if (!instanceColumns.has('runtime_tenant_id')) this.db.exec('ALTER TABLE instances ADD COLUMN runtime_tenant_id TEXT')
+    this.db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_instances_runtime_tenant_id ON instances(runtime_tenant_id) WHERE runtime_tenant_id IS NOT NULL AND runtime_tenant_id<>''")
     const orderColumns = new Set(this.db.prepare('PRAGMA table_info(orders)').all().map(column => column.name))
     if (!orderColumns.has('valid_from')) this.db.exec('ALTER TABLE orders ADD COLUMN valid_from TEXT')
     if (!orderColumns.has('valid_until')) this.db.exec('ALTER TABLE orders ADD COLUMN valid_until TEXT')
@@ -128,6 +140,7 @@ export class AuthorityStore {
     for (const [id,name,category,description,schema] of plugins) addPlugin.run(id,name,category,description,JSON.stringify(schema),'ACTIVE',now())
     this.management = new Management(this)
     this.releaseService = new Releases(this)
+    this.serviceGroupService = new ServiceGroups(this)
     if(database!==':memory:')for(const file of [database,database+'-wal',database+'-shm'])if(existsSync(file))chmodSync(file,0o600)
   }
   close() { this.db.close() }
@@ -157,6 +170,8 @@ export class AuthorityStore {
       entitlements: this.listEntitlements(),
       licenses: this.db.prepare('SELECT l.id,l.order_id,l.instance_id,l.issued_at,l.expires_at,i.customer_id,i.domains FROM licenses l JOIN instances i ON i.id=l.instance_id ORDER BY l.issued_at DESC').all().map(row => ({...row, domains: JSON.parse(row.domains || '[]')})),
       audit: this.db.prepare('SELECT * FROM audit ORDER BY id DESC LIMIT 200').all(),
+      serviceGroups: this.serviceGroupService.list(),
+      sharedReleasePlans: this.serviceGroupService.plans(),
       ...this.management.lists()
     }
   }
@@ -192,12 +207,14 @@ export class AuthorityStore {
     const project = body.projectId ? this.db.prepare('SELECT * FROM projects WHERE id=? AND customer_id=?').get(body.projectId,customer.id) : null
     if (body.projectId && !project) fail('所属项目与客户不匹配')
     const allowedDomains = domains(body.domains), maintenanceUntil = timestamp(project?.maintenance_until || body.maintenanceUntil, '维护期至')
+    const runtimeId = runtimeTenantId(body.runtimeTenantId)
     if (Date.parse(maintenanceUntil) <= Date.now()) fail('维护期必须晚于当前时间')
+    if (runtimeId && this.db.prepare('SELECT id FROM instances WHERE runtime_tenant_id=?').get(runtimeId)) fail('运行租户编号已被其他实例使用', 409)
     if (body.domain) { const host = domainName(body.domain, '客户后台地址'); domain = 'https://' + host }
     return this.transaction(() => {
       const projectId=project?.id || this.management.saveProject(null,{customerId:customer.id,productId:DEFAULT_PRODUCT,name,maintenanceUntil},actor).id
-      this.db.prepare('INSERT INTO instances(id,customer_id,name,domain,domains,maintenance_until,client_version,last_seen_at,created_at,project_id) VALUES (?,?,?,?,?,?,?,?,?,?)').run(id, customer.id, name, domain, JSON.stringify(allowedDomains), maintenanceUntil, '', null, now(),projectId)
-      this.audit(actor, 'CREATE_INSTANCE', id, { customerId: customer.id, domains: allowedDomains, maintenanceUntil }); return { id }
+      this.db.prepare('INSERT INTO instances(id,customer_id,name,domain,domains,maintenance_until,client_version,last_seen_at,runtime_tenant_id,created_at,project_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)').run(id, customer.id, name, domain, JSON.stringify(allowedDomains), maintenanceUntil, '', null, runtimeId || null, now(),projectId)
+      this.audit(actor, 'CREATE_INSTANCE', id, { customerId: customer.id, domains: allowedDomains, maintenanceUntil, runtimeTenantId: runtimeId || null }); return { id }
     })
   }
   updateInstance(id, body, actor) {
@@ -205,13 +222,15 @@ export class AuthorityStore {
     if (!instance) fail('实例不存在', 404)
     const name = text(body.name, '实例名称', 80)
     const allowedDomains = domains(body.domains), maintenanceUntil = timestamp(body.maintenanceUntil, '维护期至')
+    const runtimeId = body.runtimeTenantId === undefined ? (instance.runtime_tenant_id || '') : runtimeTenantId(body.runtimeTenantId)
     if (Date.parse(maintenanceUntil) <= Date.now()) fail('维护期必须晚于当前时间')
+    if (runtimeId && this.db.prepare('SELECT id FROM instances WHERE runtime_tenant_id=? AND id<>?').get(runtimeId, id)) fail('运行租户编号已被其他实例使用', 409)
     return this.transaction(() => {
-      this.db.prepare('UPDATE instances SET name=?,domains=? WHERE id=?').run(name, JSON.stringify(allowedDomains), id)
+      this.db.prepare('UPDATE instances SET name=?,domains=?,runtime_tenant_id=? WHERE id=?').run(name, JSON.stringify(allowedDomains), runtimeId || null, id)
       this.db.prepare('UPDATE projects SET maintenance_until=? WHERE id=?').run(maintenanceUntil,instance.project_id)
       this.db.prepare('UPDATE instances SET maintenance_until=? WHERE project_id=?').run(maintenanceUntil,instance.project_id)
       for (const row of this.db.prepare('SELECT id FROM instances WHERE project_id=?').all(instance.project_id)) this.management.reconcileLicense(row.id)
-      this.audit(actor, 'UPDATE_INSTANCE', id, { domains: allowedDomains, maintenanceUntil }); return { id }
+      this.audit(actor, 'UPDATE_INSTANCE', id, { domains: allowedDomains, maintenanceUntil, runtimeTenantId: runtimeId || null }); return { id }
     })
   }
   listEntitlements(at = Date.now()) {

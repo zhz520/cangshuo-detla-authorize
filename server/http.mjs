@@ -129,6 +129,19 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
         if (!['GET', 'HEAD'].includes(method) && !equal(request.headers['x-csrf-token'], session.csrf)) fail('请求校验失败，请刷新页面', 403)
         if (route === '/api/logout' && method === 'POST') { store.logout(token); response.setHeader('Set-Cookie', 'authority_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'); return json({ ok: true }) }
         if (route === '/api/data' && method === 'GET') return json(store.lists())
+        if (route === '/api/service-groups' && method === 'GET') return json(store.serviceGroupService.list())
+        if (route === '/api/service-groups' && method === 'POST') return json(store.serviceGroupService.save(body, session.username), 201)
+        let match
+        if ((match = route.match(/^\/api\/service-groups\/([a-z0-9][a-z0-9-]{0,47})$/))) {
+          if (method === 'GET') return json(store.serviceGroupService.find(match[1]))
+          if (method === 'PUT') return json(store.serviceGroupService.save(body, session.username, match[1]))
+        }
+        if ((match = route.match(/^\/api\/service-groups\/([a-z0-9][a-z0-9-]{0,47})\/plans$/))) {
+          if (method === 'GET') return json(store.serviceGroupService.plans(match[1]))
+          if (method === 'POST') return json(store.serviceGroupService.createPlan(match[1], body, session.username), 201)
+        }
+        if (route === '/api/shared-release-plans' && method === 'GET') return json(store.serviceGroupService.plans(url.searchParams.get('groupId')))
+        if ((match = route.match(/^\/api\/shared-release-plans\/([0-9a-f-]{36})$/)) && method === 'GET') return json(store.serviceGroupService.getPlan(match[1]))
         if (route === '/api/public-key' && method === 'GET') return json({ publicKey: store.publicKey, format: 'delta-license-v1', minimumClientVersion: '1.2.0' })
         if (route === '/api/customers' && method === 'POST') return json(store.createCustomer(body, session.username), 201)
         if (route === '/api/instances' && method === 'POST') return json(store.createInstance(body, session.username), 201)
@@ -141,7 +154,6 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
         if (route === '/api/modules' && method === 'POST') return json(store.management.saveModule(body,session.username),201)
         if (route === '/api/projects' && method === 'POST') return json(store.management.saveProject(null,body,session.username),201)
         if (route === '/api/mail/settings' && method === 'PUT') return json(store.management.saveMailSettings(body,session.username))
-        let match
         if ((match = route.match(/^\/api\/entitlements\/([^/]+)\/([^/]+)$/)) && method === 'PUT') return json(store.updateEntitlement(decodeURIComponent(match[1]),decodeURIComponent(match[2]),body,session.username))
         if ((match = route.match(/^\/api\/entitlements\/([^/]+)\/([^/]+)$/)) && method === 'DELETE') return json(store.deleteEntitlement(decodeURIComponent(match[1]),decodeURIComponent(match[2]),session.username))
         if ((match = route.match(/^\/api\/payments\/([\w-]+)$/)) && method === 'PUT') return json(store.management.savePaymentProvider(match[1],body,session.username))
