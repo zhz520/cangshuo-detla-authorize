@@ -106,7 +106,7 @@ test('runtime registry requires authentication and exports all explicitly mapped
 
     const expectedKeys = [
       'active', 'customerId', 'hosts', 'maintenanceUntil', 'name', 'platformCustomerId',
-      'platformInstanceId', 'productId', 'projectId', 'tenantId', 'wildcardDomains'
+      'platformInstanceId', 'productId', 'projectId', 'serviceGroupId', 'tenantId', 'wildcardDomains'
     ]
     for (const tenant of registry.tenants) assert.deepEqual(Object.keys(tenant).sort(), expectedKeys)
 
@@ -116,6 +116,7 @@ test('runtime registry requires authentication and exports all explicitly mapped
     assert.equal(jax.platformCustomerId, 'runtime-a')
     assert.equal(jax.customerId, 'runtime-a')
     assert.equal(jax.productId, 'detla')
+    assert.equal(jax.serviceGroupId, null)
     assert.equal(jax.maintenanceUntil, maintenanceUntil)
     assert.equal(jax.active, true)
     assert.deepEqual(jax.hosts, ['jax.example.com'])

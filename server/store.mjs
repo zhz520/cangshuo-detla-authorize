@@ -180,7 +180,8 @@ export class AuthorityStore {
   runtimeRegistry() {
     const rows = this.db.prepare(`SELECT i.id,i.runtime_tenant_id,i.customer_id,i.project_id,i.name,i.domains,
       COALESCE(p.maintenance_until,i.maintenance_until) AS maintenance_until,
-      p.product_id,p.status AS project_status,c.status AS customer_status
+      p.product_id,p.status AS project_status,c.status AS customer_status,
+      (SELECT group_id FROM service_group_instances sgi WHERE sgi.instance_id=i.id) AS service_group_id
       FROM instances i JOIN projects p ON p.id=i.project_id JOIN customers c ON c.id=i.customer_id
       WHERE i.runtime_tenant_id <> ''
       ORDER BY i.runtime_tenant_id,i.id`).all()
@@ -202,6 +203,7 @@ export class AuthorityStore {
           platformInstanceId: row.id,
           hosts: normalizedDomains.filter(host => !host.startsWith('*.')),
           wildcardDomains: normalizedDomains.filter(host => host.startsWith('*.')),
+          serviceGroupId: row.service_group_id || null,
           maintenanceUntil: row.maintenance_until,
           active: row.customer_status === 'ACTIVE' && row.project_status === 'ACTIVE'
         }

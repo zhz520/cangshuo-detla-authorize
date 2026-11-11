@@ -70,6 +70,7 @@ test('service group plan signs the exact shared release contract', () => {
   assert.equal(verify(null, Buffer.from(result.envelope.format + '.' + result.envelope.payload),
     store.publicKey, Buffer.from(result.envelope.signature, 'base64url')), true)
   const claims = JSON.parse(Buffer.from(result.envelope.payload, 'base64url'))
+  assert.equal(claims.format, 'cangshuo-shared-release-v1')
   assert.equal(claims.serviceGroupId, 'delta-shared-prod')
   assert.equal(claims.targetVersion, VERSION)
   assert.equal(claims.fromVersion, PREVIOUS)
