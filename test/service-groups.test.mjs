@@ -62,6 +62,8 @@ test('service group plan signs the exact shared release contract', () => {
   }, 'owner')
   assert.equal(group.active, true)
   assert.deepEqual(group.members.map(row => row.runtime_tenant_id), ['742', 'jax'])
+  const registry = store.runtimeRegistry()
+  assert.deepEqual(registry.tenants.map(row => [row.tenantId, row.serviceGroupId]), [['742', 'delta-shared-prod'], ['jax', 'delta-shared-prod']])
 
   const result = store.serviceGroupService.createPlan('delta-shared-prod', {
     fromVersion: PREVIOUS, targetVersion: VERSION, ...window(),

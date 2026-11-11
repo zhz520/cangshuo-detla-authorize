@@ -160,6 +160,7 @@ export class ServiceGroups {
     const issuedAt = now.toISOString()
     const expiresAt = new Date(Math.min(now.getTime() + MAX_PLAN_MINUTES * 60000, end.getTime())).toISOString()
     const plan = {
+      format: FORMAT,
       id,
       serviceGroupId: group.id,
       issuedAt,
