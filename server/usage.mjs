@@ -33,13 +33,18 @@ export class UsageBilling {
     if (!Number.isSafeInteger(priceCents) || priceCents < 0) fail('核验价格无效')
     return this.store.transaction(() => {
       const existing = this.store.db.prepare('SELECT * FROM verification_requests WHERE instance_id=? AND idempotency_key=?').get(id, key)
-      if (existing) return { created: false, request: existing }
+      if (existing && existing.status !== 'RELEASED') return { created: false, request: existing }
       this.ensure(id)
       const account = this.store.db.prepare('SELECT * FROM service_accounts WHERE instance_id=?').get(id)
       if (account.status !== 'ACTIVE') fail('服务账户已停用', 409)
       if (account.balance_cents - account.reserved_cents < priceCents) fail('实名核验服务余额不足', 409)
       const now = stamp()
       this.store.db.prepare('UPDATE service_accounts SET reserved_cents=reserved_cents+?,updated_at=? WHERE instance_id=?').run(priceCents, now, id)
+      if (existing) {
+        this.store.db.prepare("UPDATE verification_requests SET status='RESERVED',price_cents=?,subject_hash=?,result=NULL,updated_at=? WHERE id=?")
+          .run(priceCents, subject, now, existing.id)
+        return { created: true, retried: true, request: this.store.db.prepare('SELECT * FROM verification_requests WHERE id=?').get(existing.id) }
+      }
       const requestId = randomUUID()
       this.store.db.prepare('INSERT INTO verification_requests(id,instance_id,idempotency_key,subject_hash,status,price_cents,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)')
         .run(requestId, id, key, subject, 'RESERVED', priceCents, now, now)
@@ -67,5 +72,32 @@ export class UsageBilling {
         .run(debit ? 'CHARGED' : 'RELEASED', outcome, stamp(), request.id)
       return this.store.db.prepare('SELECT * FROM verification_requests WHERE id=?').get(request.id)
     })
+  }
+
+  accounts() {
+    return this.store.db.prepare(`SELECT a.*,i.name AS instance_name,i.customer_id,c.name AS customer_name
+      FROM service_accounts a LEFT JOIN instances i ON i.id=a.instance_id LEFT JOIN customers c ON c.id=i.customer_id
+      ORDER BY c.name,i.name`).all()
+  }
+
+  requests(instanceId, limit = 200) {
+    const id = text(instanceId, '实例编号', 36)
+    const size = Math.max(1, Math.min(Number(limit) || 200, 500))
+    return this.store.db.prepare('SELECT id,instance_id,idempotency_key,status,price_cents,result,created_at,updated_at FROM verification_requests WHERE instance_id=? ORDER BY created_at DESC LIMIT ?').all(id, size)
+  }
+
+  ledger(instanceId, limit = 200) {
+    const id = text(instanceId, '实例编号', 36)
+    const size = Math.max(1, Math.min(Number(limit) || 200, 500))
+    return this.store.db.prepare('SELECT * FROM service_ledger WHERE instance_id=? ORDER BY created_at DESC LIMIT ?').all(id, size)
+  }
+
+  setStatus(instanceId, status, actor) {
+    const id = text(instanceId, '实例编号', 36)
+    if (!['ACTIVE', 'SUSPENDED'].includes(status)) fail('服务账户状态无效')
+    this.ensure(id)
+    this.store.db.prepare('UPDATE service_accounts SET status=?,updated_at=? WHERE instance_id=?').run(status, stamp(), id)
+    this.store.audit(actor, 'SERVICE_STATUS', id, { status })
+    return this.ensure(id)
   }
 }
