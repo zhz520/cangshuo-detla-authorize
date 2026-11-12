@@ -33,6 +33,12 @@ export class UsageBilling {
     if (!Number.isSafeInteger(priceCents) || priceCents < 0) fail('核验价格无效')
     return this.store.transaction(() => {
       const existing = this.store.db.prepare('SELECT * FROM verification_requests WHERE instance_id=? AND idempotency_key=?').get(id, key)
+      if (existing && existing.status === 'RESERVED') {
+        const age = Date.now() - Date.parse(existing.updated_at)
+        if (Number.isFinite(age) && age < 60000) return { created: false, request: existing }
+        this.store.db.prepare('UPDATE verification_requests SET updated_at=? WHERE id=?').run(stamp(), existing.id)
+        return { created: true, retried: true, request: this.store.db.prepare('SELECT * FROM verification_requests WHERE id=?').get(existing.id) }
+      }
       if (existing && existing.status !== 'RELEASED') return { created: false, request: existing }
       this.ensure(id)
       const account = this.store.db.prepare('SELECT * FROM service_accounts WHERE instance_id=?').get(id)

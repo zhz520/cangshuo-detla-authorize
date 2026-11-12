@@ -71,7 +71,8 @@ export class IdentityVerificationService {
         const matched = String(existing.result || '').startsWith('MATCH')
         return { matched, status: existing.status, requestedAt: existing.created_at, alreadyProcessed: true, instanceId: instance.id, version }
       }
-      if (existing.status !== 'RESERVED') fail('实名核验请求状态异常', 409)
+      if (existing.status === 'RESERVED') fail('实名核验正在处理中，请稍后重试', 409)
+      fail('实名核验请求状态异常', 409)
     }
     let providerResult
     try {
