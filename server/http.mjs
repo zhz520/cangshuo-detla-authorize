@@ -6,6 +6,8 @@ import { HttpError, fail } from './store.mjs'
 import { DEFAULT_PRODUCT } from './management.mjs'
 import { Mailer } from './mail.mjs'
 import { PaymentService } from './payments.mjs'
+import { UsageBilling } from './usage.mjs'
+import { HttpIdentityProvider, IdentityVerificationService } from './identity.mjs'
 import { Readable,Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 
@@ -22,6 +24,14 @@ const requestBaseUrl = request => {
 const releaseNotesPage = (productId, release) => `<main><p class="eyebrow">CANGSHUO · RELEASE NOTES</p><h1>软件正式版 ${html(release.version)}</h1><p class="meta">软件 ${html(productId)} · 发布于 ${html(release.published_at)}</p><section><h2>更新说明</h2><pre>${html(release.notes)}</pre></section><section><h2>更新内容</h2>${release.items.length ? `<ul>${release.items.map(item=>`<li><strong>${html(item.name)}</strong>${item.required?' <span class="tag">必要更新</span>':''}${item.description?`<p>${html(item.description)}</p>`:''}</li>`).join('')}</ul>` : '<p>此版本暂未登记可选更新内容。</p>'}</section><p class="foot">此页由授权运营中心提供。</p></main>`
 export function createAuthorityServer(store, { secureCookie = false, staticDirectory, allowedOrigins = [], payments = new PaymentService(store) } = {}) {
   const mailer = new Mailer(store)
+  const usageBilling = new UsageBilling(store)
+  const identityPriceCents = Number(process.env.IDENTITY_PRICE_CENTS || '100')
+  const identity = new IdentityVerificationService(
+    store,
+    usageBilling,
+    new HttpIdentityProvider({ url: process.env.IDENTITY_PROVIDER_URL, token: process.env.IDENTITY_PROVIDER_TOKEN }),
+    { priceCents: identityPriceCents, subjectPepper: process.env.IDENTITY_SUBJECT_PEPPER }
+  )
   const attempts = new Map()
   const checkoutAttempts = new Map()
   const trustedOrigins = new Set(allowedOrigins.map(value => { try { const url = new URL(value); if (!['http:','https:'].includes(url.protocol) || url.username || url.password) throw new Error(); return url.origin } catch { fail('后台允许来源配置格式错误') } }))
@@ -102,6 +112,7 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
         return json({...claims,updates:store.management.clientUpdates(productId,body.version,requestBaseUrl(request) || undefined),modules:store.management.clientModules(productId)})
       }
       if(route==='/api/client/update-plan' && method==='POST')return json(store.releaseService.plan(body))
+      if(route==='/api/client/identity/verify' && method==='POST')return json(await identity.verify(body))
       if(route==='/api/client/artifact' && method==='POST') {
         const {result,size}=await store.releaseService.artifact(body);let bytes=0
         response.writeHead(200,{'Content-Type':'application/zip','Content-Length':String(size)})
@@ -134,6 +145,9 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
         if (route === '/api/instances' && method === 'POST') return json(store.createInstance(body, session.username), 201)
         if (route === '/api/entitlements' && method === 'GET') return json(store.listEntitlements())
         if (route === '/api/entitlements' && method === 'POST') return json(store.createEntitlement(body, session.username), 201)
+        if (route === '/api/usage/accounts' && method === 'GET') return json(usageBilling.accounts())
+        if (route === '/api/usage/requests' && method === 'GET') return json(usageBilling.requests(url.searchParams.get('instanceId'), url.searchParams.get('limit')))
+        if (route === '/api/usage/ledger' && method === 'GET') return json(usageBilling.ledger(url.searchParams.get('instanceId'), url.searchParams.get('limit')))
         if (route === '/api/orders/preview' && method === 'GET') return json(store.orderPreview(url.searchParams.get('instanceId'), url.searchParams.get('moduleId')))
         if (route === '/api/orders' && method === 'POST') return json(store.createOrder(body, session.username), 201)
         if (route === '/api/releases' && method === 'POST') return json(store.releaseService.create(body, session.username), 201)
@@ -144,6 +158,8 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
         let match
         if ((match = route.match(/^\/api\/entitlements\/([^/]+)\/([^/]+)$/)) && method === 'PUT') return json(store.updateEntitlement(decodeURIComponent(match[1]),decodeURIComponent(match[2]),body,session.username))
         if ((match = route.match(/^\/api\/entitlements\/([^/]+)\/([^/]+)$/)) && method === 'DELETE') return json(store.deleteEntitlement(decodeURIComponent(match[1]),decodeURIComponent(match[2]),session.username))
+        if ((match = route.match(/^\/api\/usage\/accounts\/([a-f\d-]+)\/credit$/)) && method === 'POST') return json(usageBilling.credit(match[1], body.amountCents, body.reference, session.username))
+        if ((match = route.match(/^\/api\/usage\/accounts\/([a-f\d-]+)\/status$/)) && method === 'PUT') return json(usageBilling.setStatus(match[1], body.status, session.username))
         if ((match = route.match(/^\/api\/payments\/([\w-]+)$/)) && method === 'PUT') return json(store.management.savePaymentProvider(match[1],body,session.username))
         if (route === '/api/payment-keys/upload' && method === 'POST') return json(store.management.uploadPaymentKey(body,session.username),201)
         if (route === '/api/mail/test' && method === 'POST') return json(mailer.test(body,session.username))
