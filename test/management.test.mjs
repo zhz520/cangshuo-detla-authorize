@@ -199,6 +199,18 @@ test('official WeChat notifications are a priced catalog module and module CRUD 
   assert.throws(()=>store.deleteModule('official_wechat_notifications','owner'),/订单或授权/)
  }finally{f.close()}
 })
+test('neumorphism theme is registered as a draft module until an operator sets its price',()=>{
+ const f=setup(),{store}=f;try{
+  let theme=store.lists().modules.find(row=>row.id==='theme_neumorphism')
+  assert.equal(theme.status,'DRAFT');assert.equal(theme.price_cents,null);assert.equal(theme.term_days,365)
+  assert.equal(theme.min_version,'1.15.0');assert.equal(theme.product_id,'detla')
+  assert(!store.management.clientModules('detla').some(row=>row.id==='theme_neumorphism'))
+  assert.throws(()=>store.updateModule('theme_neumorphism',{status:'ACTIVE'},'owner'),/必须配置价格/)
+  store.updateModule('theme_neumorphism',{priceCents:9900,status:'ACTIVE'},'owner')
+  theme=store.management.clientModules('detla').find(row=>row.id==='theme_neumorphism')
+  assert.equal(theme.priceCents,9900);assert.equal(theme.termDays,365);assert.equal(theme.minVersion,'1.15.0')
+ }finally{f.close()}
+})
 test('software registration does not require GitHub while version checks remain optional',async()=>{
  const f=setup(),{store}=f;try{
   store.management.saveProduct(null,{id:'local-tool',name:'本地业务系统',kind:'WEB',repository:''},'owner')
