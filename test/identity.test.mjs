@@ -74,6 +74,28 @@ test('identity request is rejected when the instance lacks the paid entitlement'
   } finally { store.close() }
 })
 
+test('a concurrent reservation is rejected while a stale reservation can be safely retried', async () => {
+  const { store, instance, license, billing } = setup()
+  try {
+    billing.credit(instance, 500, 'test-credit', 'owner')
+    let calls = 0
+    const service = new IdentityVerificationService(store, billing,
+      { configured: () => true, verify: async () => { calls++; return { matched: true, reference: 'provider-3' } } },
+      { priceCents: 100, subjectPepper: 'test-pepper' })
+    const body = { license, version: '1.15.0', idempotencyKey: 'identity-request-0004', realName: '赵六', idNumber: '11010519491231002X' }
+    billing.reserve(instance, body.idempotencyKey, 'subject-4', 100)
+
+    await assert.rejects(() => service.verify(body), /正在处理中/)
+    assert.equal(calls, 0)
+    store.db.prepare('UPDATE verification_requests SET updated_at=? WHERE idempotency_key=?').run(new Date(Date.now() - 120000).toISOString(), body.idempotencyKey)
+    const retried = await service.verify(body)
+    assert.equal(retried.matched, true)
+    assert.equal(calls, 1)
+    assert.equal(billing.ensure(instance).balance_cents, 400)
+    assert.equal(billing.ensure(instance).reserved_cents, 0)
+  } finally { store.close() }
+})
+
 test('Chinese identity number checksum is validated before billing', () => {
   assert.equal(validateIdNumber('11010519491231002x'), '11010519491231002X')
   assert.throws(() => validateIdNumber('110105194912310021'), /校验失败/)
