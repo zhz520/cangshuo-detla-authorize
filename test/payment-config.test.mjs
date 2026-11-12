@@ -40,7 +40,7 @@ test('WeChat fields are required only by the methods that use them', async () =>
 })
 
 test('the production payment UI registers the upload component and its styles', async () => {
-  const ui = await read('../src/main.js')
+  const ui = await read('../src/authority-ui.js')
   assert.match(ui, /ElUpload/)
   assert.match(ui, /components\/upload\/style\/css\.mjs/)
 })

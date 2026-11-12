@@ -1,0 +1,34 @@
+# Fill SITE_HOST and SITE_SLUG, and serve this vhost over HTTPS.
+# Add https://SITE_HOST to the backend's AUTHORITY_ALLOWED_ORIGINS before opening the site.
+server {
+    listen 443 ssl;
+    server_name SITE_HOST;
+
+    ssl_certificate /PATH/TO/fullchain.pem;
+    ssl_certificate_key /PATH/TO/privkey.pem;
+    client_max_body_size 10m;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_read_timeout 30s;
+
+    location = / { return 302 /chat/SITE_SLUG; }
+    location = /agent { return 302 /chat/SITE_SLUG/agent; }
+    location = /chat/SITE_SLUG { proxy_pass http://127.0.0.1:17441; }
+    location = /chat/SITE_SLUG/agent { proxy_pass http://127.0.0.1:17441; }
+    location ^~ /api/support/SITE_SLUG/ { proxy_pass http://127.0.0.1:17441; }
+    location ^~ /assets/ { proxy_pass http://127.0.0.1:17441; }
+    location = /privacy {
+        alias /PATH/TO/support-evaluation-privacy.html;
+        default_type text/html;
+        charset utf-8;
+        add_header X-Content-Type-Options nosniff;
+        add_header Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'";
+    }
+    # Do not expose operations or licensing APIs through this vhost.
+    location / { return 404; }
+}

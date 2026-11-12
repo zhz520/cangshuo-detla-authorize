@@ -6,6 +6,7 @@ import { HttpError, fail } from './store.mjs'
 import { DEFAULT_PRODUCT } from './management.mjs'
 import { Mailer } from './mail.mjs'
 import { PaymentService } from './payments.mjs'
+import { Support } from './support.mjs'
 import { UsageBilling } from './usage.mjs'
 import { HttpIdentityProvider, IdentityVerificationService } from './identity.mjs'
 import { Readable,Transform } from 'node:stream'
@@ -22,7 +23,7 @@ const requestBaseUrl = request => {
   return `${protocol}://${host}`
 }
 const releaseNotesPage = (productId, release) => `<main><p class="eyebrow">CANGSHUO · RELEASE NOTES</p><h1>软件正式版 ${html(release.version)}</h1><p class="meta">软件 ${html(productId)} · 发布于 ${html(release.published_at)}</p><section><h2>更新说明</h2><pre>${html(release.notes)}</pre></section><section><h2>更新内容</h2>${release.items.length ? `<ul>${release.items.map(item=>`<li><strong>${html(item.name)}</strong>${item.required?' <span class="tag">必要更新</span>':''}${item.description?`<p>${html(item.description)}</p>`:''}</li>`).join('')}</ul>` : '<p>此版本暂未登记可选更新内容。</p>'}</section><p class="foot">此页由授权运营中心提供。</p></main>`
-export function createAuthorityServer(store, { secureCookie = false, staticDirectory, allowedOrigins = [], payments = new PaymentService(store) } = {}) {
+export function createAuthorityServer(store, { secureCookie = false, staticDirectory, allowedOrigins = [], support = new Support(store), payments = new PaymentService(store) } = {}) {
   const mailer = new Mailer(store)
   const usageBilling = new UsageBilling(store)
   const identityPriceCents = Number(process.env.IDENTITY_PRICE_CENTS || '100')
@@ -41,11 +42,19 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
     const json = (data, status = 200) => { response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' }); response.end(JSON.stringify(data)) }
     try {
       const url = new URL(request.url, 'http://localhost'), route = url.pathname, method = request.method
+      const publicSupport=route.startsWith('/api/support/')
+      if(publicSupport){
+        response.setHeader('Cross-Origin-Resource-Policy','same-origin')
+        const fetchSite=request.headers['sec-fetch-site']
+        if((method!=='GET'||url.searchParams.get('prepare')==='1')&&['cross-site','same-site'].includes(fetchSite))fail('请求来源不匹配',403)
+      }
+      const supportFile = method === 'POST' && /^\/api\/support\/[a-z0-9-]+\/(?:agent\/conversations\/\d+\/)?attachment$/.test(route)
       let body = {}, rawBody = ''
       if (['POST', 'PUT', 'PATCH'].includes(method)) {
         if (request.headers.origin) {
           let origin; try { origin = new URL(request.headers.origin) } catch { fail('请求来源不正确', 403) }
           if (!['http:', 'https:'].includes(origin.protocol)) fail('请求来源不匹配', 403)
+          if(publicSupport&&origin.host!==request.headers.host)fail('请求来源不匹配',403)
           if (trustedOrigins.size) {
             if (!trustedOrigins.has(origin.origin)) fail('请求来源不匹配', 403)
           } else {
@@ -54,13 +63,17 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
             if (!expectedHost || origin.host !== expectedHost) fail('请求来源不匹配', 403)
           }
         }
-        if (!String(request.headers['content-type'] || '').startsWith('application/json')) fail('请求必须为 JSON', 415)
-        let size = 0, chunks = []
-        for await (const chunk of request) { size += chunk.length; if (size > 65536) fail('请求内容过大', 413); chunks.push(chunk) }
-        rawBody = Buffer.concat(chunks).toString('utf8')
-        try { body = JSON.parse(rawBody || '{}') } catch { fail('JSON 格式不正确') }
-        if (!body || typeof body !== 'object' || Array.isArray(body)) fail('请求内容须为对象')
+        if (!supportFile) {
+          if (String(request.headers['content-type']||'').split(';',1)[0].trim().toLowerCase()!=='application/json') fail('请求必须为 JSON', 415)
+          if(Number(request.headers['content-length'])>65536)fail('请求内容过大',413)
+          let size = 0, chunks = []
+          for await (const chunk of request.iterator({ destroyOnReturn: false })) { size += chunk.length; if (size > 65536) fail('请求内容过大', 413); chunks.push(chunk) }
+          rawBody = Buffer.concat(chunks).toString('utf8')
+          try { body = JSON.parse(rawBody || '{}') } catch { fail('JSON 格式不正确') }
+          if (!body || typeof body !== 'object' || Array.isArray(body)) fail('请求内容须为对象')
+        }
       }
+      if (route.startsWith('/api/support/')) return await support.handle(request, response, url, body, json, secureCookie)
       if (route === '/health' && method === 'GET') return json({ ok: true, service: 'cangshuo-detla-authorize' })
       if (route === '/api/client/checkout' && method === 'POST') {
         const ip=String(request.headers['x-forwarded-for']||request.socket.remoteAddress||'').split(',',1)[0].trim()
@@ -138,6 +151,7 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
       if (route.startsWith('/api/')) {
         if (!session) fail('请先登录运营后台', 401)
         if (!['GET', 'HEAD'].includes(method) && !equal(request.headers['x-csrf-token'], session.csrf)) fail('请求校验失败，请刷新页面', 403)
+        if (route.startsWith('/api/support-admin/')) return await support.owner(route, method, body, url.searchParams, session.username, json, response)
         if (route === '/api/logout' && method === 'POST') { store.logout(token); response.setHeader('Set-Cookie', 'authority_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'); return json({ ok: true }) }
         if (route === '/api/data' && method === 'GET') return json(store.lists())
         if (route === '/api/runtime/tenants' && method === 'GET') return json(store.runtimeRegistry())
@@ -201,7 +215,8 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
       const root = path.resolve(staticDirectory), candidate = path.resolve(root, '.' + pathname)
       if (!candidate.startsWith(root + path.sep) && candidate !== root) fail('资源不存在', 404)
       let target = candidate
-      try { if (!(await stat(target)).isFile()) target = path.join(root, 'index.html') } catch { if(path.extname(pathname))fail('资源不存在，请刷新页面重试',404);target = path.join(root, 'index.html') }
+      if (/^\/chat\/[a-z0-9][a-z0-9-]{1,47}(?:\/agent)?\/?$/.test(route)) target=path.join(root,'support.html')
+      else try { if (!(await stat(target)).isFile()) target = path.join(root, 'index.html') } catch { if(path.extname(pathname))fail('资源不存在，请刷新页面重试',404);target = path.join(root, 'index.html') }
       const extension = path.extname(target), types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.ico': 'image/x-icon', '.woff2': 'font/woff2' }
       if (!types[extension]) fail('资源不存在', 404)
       if (/^\/assets\/[^/]+-[A-Za-z0-9_-]{8,}\.(?:js|css|woff2|svg|png|jpg)$/.test(pathname)) response.setHeader('Cache-Control','public, max-age=31536000, immutable')

@@ -12,7 +12,12 @@ function setup() {
   const project = store.management.saveProject(null, { customerId: 'a', productId: 'detla', name: '项目A', maintenanceUntil: '2028-12-01T00:00:00Z' }, 'owner').id
   const instance = randomUUID()
   store.createInstance({ id: instance, customerId: 'a', projectId: project, name: '实例A', domains: ['a.example.com'] }, 'owner')
-  store.createEntitlement({ instanceId: instance, moduleId: 'identity_verification' }, 'owner')
+  store.createEntitlement({
+    instanceId: instance,
+    moduleId: 'identity_verification',
+    validFrom: new Date(Date.now() - 60000).toISOString(),
+    validUntil: '2028-01-01T00:00:00.000Z'
+  }, 'owner')
   return { store, instance, license: store.management.identity(instance, 'owner'), billing: new UsageBilling(store) }
 }
 
