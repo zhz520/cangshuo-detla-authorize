@@ -6,7 +6,7 @@
     </section>
   </main>
   <div v-else class="shell" :class="{ 'is-collapsed': sidebarCollapsed }">
-    <button v-if="menuOpen" class="nav-backdrop" aria-label="关闭菜单" @click="menuOpen=false"/><aside :class="{'is-open':menuOpen}"><div class="brand"><div class="brand-mark">C</div><div class="brand-copy"><strong>沧烁授权中心</strong><small>系统运营工作台</small></div></div><nav class="nav-scroll" aria-label="运营菜单"><section v-for="group in navigationGroups" :key="group.name" class="nav-section"><div class="nav-label">{{ group.name }}</div><button v-for="item in group.items" :key="item.id" :class="{selected:page===item.id}" :aria-current="page===item.id?'page':undefined" :title="item.name" @click="page=item.id;menuOpen=false"><component :is="item.icon"/><span>{{ item.name }}</span></button></section></nav><div class="aside-bottom">独立运营后台<br/>客户业务系统单独维护</div></aside>
+    <button v-if="menuOpen" class="nav-backdrop" aria-label="关闭菜单" @click="menuOpen=false"/><aside :class="{'is-open':menuOpen}"><div class="brand"><div class="brand-mark">C</div><div class="brand-copy"><strong>沧烁授权中心</strong><small>系统运营工作台</small></div></div><nav class="nav-scroll" aria-label="运营菜单"><section v-for="group in navigationGroups" :key="group.name" class="nav-section" :class="{ 'has-current': group.items.some(item=>item.id===page) }"><button type="button" class="nav-group-toggle" :class="{ active: group.items.some(item=>item.id===page) }" :aria-label="group.name" :aria-expanded="expandedNavGroup===group.name" @click="toggleNavGroup(group.name)"><span>{{ group.name }}</span><span class="nav-group-meta"><em>{{ group.items.length }}</em><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 10 4 4 4-4"/></svg></span></button><div v-show="expandedNavGroup===group.name" class="nav-group-items"><button v-for="item in group.items" :key="item.id" :class="{selected:page===item.id}" :aria-current="page===item.id?'page':undefined" :title="item.name" @click="page=item.id;menuOpen=false"><component :is="item.icon"/><span>{{ item.name }}</span></button></div></section></nav><div class="aside-bottom">独立运营后台<br/>客户业务系统单独维护</div></aside>
     <div class="workspace"><header>
       <div class="header-title">
         <button class="menu-toggle" aria-label="打开菜单" :aria-expanded="menuOpen" @click="menuOpen=!menuOpen">☰</button>
@@ -139,14 +139,15 @@ import { HomeFilled, User, Monitor, Goods, Document, Key, UploadFilled, Clock, C
 const navigationGroups=[
   {name:'工作台',items:[{id:'overview',name:'运营概览',icon:HomeFilled},{id:'support',name:'在线客服',icon:Connection}]},
   {name:'客户与项目',items:[{id:'customers',name:'客户管理',icon:User},{id:'projects',name:'项目管理',icon:Monitor},{id:'instances',name:'实例接入',icon:Connection},{id:'products',name:'软件中心',icon:Goods}]},
-  {name:'授权与发布',items:[{id:'modules',name:'功能与定价',icon:Goods},{id:'entitlements',name:'客户功能',icon:Key},{id:'usage',name:'实名用量账户',icon:CreditCard},{id:'orders',name:'购买订单',icon:Document},{id:'licenses',name:'授权管理',icon:Key},{id:'releases',name:'版本发布',icon:UploadFilled},{id:'serviceGroups',name:'服务组发布',icon:Connection}]},
+  {name:'商品与授权',items:[{id:'modules',name:'功能与定价',icon:Goods},{id:'entitlements',name:'客户功能',icon:Key},{id:'orders',name:'购买订单',icon:Document},{id:'licenses',name:'授权管理',icon:Key}]},
+  {name:'发布与用量',items:[{id:'usage',name:'实名用量账户',icon:CreditCard},{id:'releases',name:'版本发布',icon:UploadFilled},{id:'serviceGroups',name:'服务组发布',icon:Connection}]},
   {name:'系统设置',items:[{id:'payments',name:'支付设置',icon:CreditCard},{id:'mail',name:'邮件通知',icon:Connection},{id:'audit',name:'操作记录',icon:Clock}]}
 ]
 const navigation=computed(()=>navigationGroups.flatMap(group=>group.items))
 const descriptions={overview:'统一管理客户授权、开通流程与交付状态。',support:'管理授权中心在线客服会话与客户入口。',customers:'登记客户编号与名称，与客户系统独立维护。',instances:'将授权绑定到客户系统显示的实例编号。',modules:'先确认价格与期限，再开放客户在线购买。',entitlements:'按实例维护每项付费功能的授权状态、有效期和续费。',usage:'管理实名核验的按次余额、冻结金额、核验请求和资金流水。',products:'登记不同类型的软件项目与 GitHub 正式版仓库。',projects:'按项目维护到期时间、暂停策略、支付接入和通知邮箱。',payments:'统一维护授权中心收款参数，再由项目选择可用支付方式。',mail:'配置邮箱发信与查看重要通知发送记录。',orders:'查看客户在线购买、人工维护期接入和授权签发记录。',licenses:'查看与交付签名授权，签发私钥留在运营中心。',releases:'维护客户端的版本目录与发布说明。',serviceGroups:'登记多租户服务组成员，签发共享发布计划。',audit:'保留客户登记、在线收款、退款和签发记录。'}
 const actionLabels={SAVE_PRODUCT:'保存软件与仓库',UPDATE_CUSTOMER:'更新客户',DELETE_CUSTOMER:'删除客户',CREATE_PROJECT:'新增项目',UPDATE_PROJECT:'更新项目维护',CREATE_MODULE:'登记功能模块',UPDATE_MAIL_SETTINGS:'保存邮箱配置',QUEUE_TEST_MAIL:'测试发信',RETRY_MAIL:'重试邮件',UPDATE_RELEASE_ITEMS:'配置更新内容',CREATE_UPDATE_PLAN:'生成更新计划',REISSUE_MAINTENANCE_LICENSE:'同步维护授权',EXPORT_INSTANCE_IDENTITY:'导出实例接入凭据',CLIENT_VERSION_REPORT:'客户端版本上报',LOGIN:'登录后台',CREATE_CUSTOMER:'登记客户',CREATE_INSTANCE:'登记实例',UPDATE_INSTANCE:'更新授权域名/维护期',CREATE_SERVICE_GROUP:'新增共享服务组',UPDATE_SERVICE_GROUP:'更新共享服务组',CREATE_SHARED_RELEASE_PLAN:'签发共享发布计划',UPDATE_MODULE:'调整模块价格',CREATE_ORDER:'创建功能订单',CONFIRM_ONLINE_PAYMENT:'在线支付自动确认',CONFIRM_MANUAL_PAYMENT:'确认人工收款',UPLOAD_PAYMENT_KEY:'上传支付密钥',UPDATE_PLUGIN:'配置客户插件',GRANT_MAINTENANCE_ACCESS:'维护期接入',ISSUE_LICENSE:'签发授权',CREATE_ENTITLEMENT:'新增客户功能',UPDATE_ENTITLEMENT:'编辑客户功能',DELETE_ENTITLEMENT:'删除客户功能',CREATE_RELEASE_DRAFT:'登记版本草稿',PUBLISH_RELEASE_METADATA:'发布版本信息'}
 const createActions={customers:'customer',instances:'instance',entitlements:'entitlement',orders:'order',modules:'newModule',releases:'release'},createLabels={customers:'新增客户',instances:'登记实例',entitlements:'新增客户功能',orders:'创建订单',modules:'新增功能模块',releases:'新增版本'}
-const menuOpen=ref(false), sidebarCollapsed=ref(false), searchOpen=ref(false), notificationsOpen=ref(false), accountOpen=ref(false), globalQuery=ref(''), globalSearchInput=ref(null)
+const menuOpen=ref(false), sidebarCollapsed=ref(false), searchOpen=ref(false), notificationsOpen=ref(false), accountOpen=ref(false), globalQuery=ref(''), globalSearchInput=ref(null), expandedNavGroup=ref('工作台')
 const ready=ref(false),bootError=ref(''),loggedIn=ref(false),username=ref(''),csrf=ref(''),busy=ref(false),saving=ref(false),loginBusy=ref(false),logoutBusy=ref(false),page=ref('overview'),heading=ref(null),dataError=ref(''),loaded=ref(false)
 const operationsPages=['products','projects','payments','mail','releases']
 const credentials=reactive({username:'admin',password:''}),data=reactive({products:[],projects:[],paymentProviders:[],mailSettings:{},mailQueue:[],customers:[],instances:[],modules:[],entitlements:[],orders:[],licenses:[],releases:[],serviceGroups:[],sharedReleasePlans:[],audit:[]})
@@ -185,6 +186,7 @@ const processSteps=computed(()=>{
 })
 const {query:search,state:listState,total,rows:records}=useRecords(()=>data[page.value]||[],()=>page.value)
 function go(target){if(target)page.value=target}
+function toggleNavGroup(name){expandedNavGroup.value=expandedNavGroup.value===name?'':name}
 function closeHeaderPanels(){searchOpen.value=false;notificationsOpen.value=false;accountOpen.value=false}
 function openHeaderPanel(panel){searchOpen.value=panel==='search';notificationsOpen.value=panel==='notifications';accountOpen.value=panel==='account'}
 function activateGlobalSearch(){openHeaderPanel('search');nextTick(()=>globalSearchInput.value?.focus())}
@@ -242,7 +244,7 @@ async function publish(release){try{await ElMessageBox.confirm('请确认 GitHub
 async function connect(){bootError.value='';try{const session=await api('/session');if(session.authenticated){loggedIn.value=true;username.value=session.username;csrf.value=session.csrf;await refresh()}ready.value=true}catch(error){bootError.value='运营服务连接失败：'+error.message}}
 function readPage(){const id=window.location.hash.slice(1);page.value=navigation.value.some(item=>item.id===id)?id:'overview'}
 function escapeMenu(event){if(event.key==='Escape'){menuOpen.value=false;closeHeaderPanels()}}
-watch(page,async value=>{window.location.hash=value;menuOpen.value=false;closeHeaderPanels();dialog.value=false;deliveryVisible.value=false;window.scrollTo(0,0);await nextTick();heading.value?.focus({preventScroll:true})})
+watch(page,async value=>{window.location.hash=value;menuOpen.value=false;closeHeaderPanels();dialog.value=false;deliveryVisible.value=false;const group=navigationGroups.find(group=>group.items.some(item=>item.id===value));expandedNavGroup.value=group?.name||expandedNavGroup.value;window.scrollTo(0,0);await nextTick();heading.value?.focus({preventScroll:true})})
 watch(menuOpen,value=>{document.body.style.overflow=value?'hidden':''})
 watch(loggedIn,value=>{if(!value){dialog.value=false;deliveryVisible.value=false}})
 onMounted(()=>{readPage();window.addEventListener('hashchange',readPage);window.addEventListener('keydown',escapeMenu);document.addEventListener('pointerdown',closeHeaderPanels);connect()})
