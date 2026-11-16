@@ -13,10 +13,41 @@
         <button class="collapse-toggle" aria-label="折叠侧栏" :aria-expanded="!sidebarCollapsed" @click="sidebarCollapsed=!sidebarCollapsed">☰</button>
         <span class="breadcrumb">平台运营 / 授权中心 / </span><strong>{{ title }}</strong>
       </div>
-      <div class="header-actions">
-        <span class="online-status"><i></i>在线授权</span>
-        <div class="user-chip"><span class="user-avatar">{{ username.slice(0, 1) }}</span><span>{{ username }}</span></div>
-        <el-button text :loading="logoutBusy" @click="logout">退出</el-button>
+      <div class="header-actions" @pointerdown.stop>
+        <div class="global-search" :class="{ active: searchOpen }" @click="activateGlobalSearch">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+          <input ref="globalSearchInput" v-model="globalQuery" aria-label="全局搜索" placeholder="搜索客户、项目、授权号…" autocomplete="off" @focus="openHeaderPanel('search')" @keydown.enter="selectFirstSearchResult" @keydown.esc="closeHeaderPanels">
+          <div v-if="searchOpen && globalQuery.trim()" class="header-panel search-results-panel">
+            <button v-for="result in searchResults" :key="result.key" type="button" class="search-result" @click.stop="selectSearchResult(result)">
+              <span><strong>{{ result.title }}</strong><small>{{ result.meta }}</small></span>
+              <span aria-hidden="true">›</span>
+            </button>
+            <p v-if="!searchResults.length" class="header-panel-empty">没有匹配的客户、项目或授权记录</p>
+          </div>
+        </div>
+        <div class="header-popover notification-wrap">
+          <button type="button" class="header-icon-button" aria-label="最近操作通知" :aria-expanded="notificationsOpen" @click.stop="toggleHeaderPanel('notifications')">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg>
+            <i v-if="data.audit.length" class="notification-dot"></i>
+          </button>
+          <section v-if="notificationsOpen" class="header-panel notifications-panel">
+            <header><strong>最近操作</strong><button type="button" @click="go('audit');notificationsOpen=false">查看全部</button></header>
+            <button v-for="row in recentAudit" :key="row.id || row.created_at" type="button" class="notification-item" @click="go('audit');notificationsOpen=false">
+              <span class="notification-item-mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="m9 12 2 2 5-5"/></svg></span>
+              <span><strong>{{ actionLabels[row.action] || row.action }}</strong><small>{{ row.actor }} · {{ time(row.created_at) }}</small></span>
+            </button>
+            <p v-if="!recentAudit.length" class="header-panel-empty">暂无最近操作</p>
+          </section>
+        </div>
+        <div class="header-popover account-wrap">
+          <button type="button" class="user-chip" :aria-expanded="accountOpen" @click.stop="toggleHeaderPanel('account')">
+            <span class="user-avatar">{{ username.slice(0, 1) }}</span><span class="user-name">{{ username }}</span><svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+          </button>
+          <section v-if="accountOpen" class="header-panel account-panel">
+            <div class="account-summary"><span class="user-avatar">{{ username.slice(0, 1) }}</span><span><strong>{{ username }}</strong><small>运营账号</small></span></div>
+            <button type="button" class="account-action" :disabled="logoutBusy" @click="logout">{{ logoutBusy ? '正在退出…' : '退出登录' }}</button>
+          </section>
+        </div>
       </div>
     </header>
       <section class="content" :aria-busy="busy">
@@ -115,11 +146,25 @@ const navigation=computed(()=>navigationGroups.flatMap(group=>group.items))
 const descriptions={overview:'统一管理客户授权、开通流程与交付状态。',support:'管理授权中心在线客服会话与客户入口。',customers:'登记客户编号与名称，与客户系统独立维护。',instances:'将授权绑定到客户系统显示的实例编号。',modules:'先确认价格与期限，再开放客户在线购买。',entitlements:'按实例维护每项付费功能的授权状态、有效期和续费。',usage:'管理实名核验的按次余额、冻结金额、核验请求和资金流水。',products:'登记不同类型的软件项目与 GitHub 正式版仓库。',projects:'按项目维护到期时间、暂停策略、支付接入和通知邮箱。',payments:'统一维护授权中心收款参数，再由项目选择可用支付方式。',mail:'配置邮箱发信与查看重要通知发送记录。',orders:'查看客户在线购买、人工维护期接入和授权签发记录。',licenses:'查看与交付签名授权，签发私钥留在运营中心。',releases:'维护客户端的版本目录与发布说明。',serviceGroups:'登记多租户服务组成员，签发共享发布计划。',audit:'保留客户登记、在线收款、退款和签发记录。'}
 const actionLabels={SAVE_PRODUCT:'保存软件与仓库',UPDATE_CUSTOMER:'更新客户',DELETE_CUSTOMER:'删除客户',CREATE_PROJECT:'新增项目',UPDATE_PROJECT:'更新项目维护',CREATE_MODULE:'登记功能模块',UPDATE_MAIL_SETTINGS:'保存邮箱配置',QUEUE_TEST_MAIL:'测试发信',RETRY_MAIL:'重试邮件',UPDATE_RELEASE_ITEMS:'配置更新内容',CREATE_UPDATE_PLAN:'生成更新计划',REISSUE_MAINTENANCE_LICENSE:'同步维护授权',EXPORT_INSTANCE_IDENTITY:'导出实例接入凭据',CLIENT_VERSION_REPORT:'客户端版本上报',LOGIN:'登录后台',CREATE_CUSTOMER:'登记客户',CREATE_INSTANCE:'登记实例',UPDATE_INSTANCE:'更新授权域名/维护期',CREATE_SERVICE_GROUP:'新增共享服务组',UPDATE_SERVICE_GROUP:'更新共享服务组',CREATE_SHARED_RELEASE_PLAN:'签发共享发布计划',UPDATE_MODULE:'调整模块价格',CREATE_ORDER:'创建功能订单',CONFIRM_ONLINE_PAYMENT:'在线支付自动确认',CONFIRM_MANUAL_PAYMENT:'确认人工收款',UPLOAD_PAYMENT_KEY:'上传支付密钥',UPDATE_PLUGIN:'配置客户插件',GRANT_MAINTENANCE_ACCESS:'维护期接入',ISSUE_LICENSE:'签发授权',CREATE_ENTITLEMENT:'新增客户功能',UPDATE_ENTITLEMENT:'编辑客户功能',DELETE_ENTITLEMENT:'删除客户功能',CREATE_RELEASE_DRAFT:'登记版本草稿',PUBLISH_RELEASE_METADATA:'发布版本信息'}
 const createActions={customers:'customer',instances:'instance',entitlements:'entitlement',orders:'order',modules:'newModule',releases:'release'},createLabels={customers:'新增客户',instances:'登记实例',entitlements:'新增客户功能',orders:'创建订单',modules:'新增功能模块',releases:'新增版本'}
-const menuOpen=ref(false), sidebarCollapsed=ref(false)
+const menuOpen=ref(false), sidebarCollapsed=ref(false), searchOpen=ref(false), notificationsOpen=ref(false), accountOpen=ref(false), globalQuery=ref(''), globalSearchInput=ref(null)
 const ready=ref(false),bootError=ref(''),loggedIn=ref(false),username=ref(''),csrf=ref(''),busy=ref(false),saving=ref(false),loginBusy=ref(false),logoutBusy=ref(false),page=ref('overview'),heading=ref(null),dataError=ref(''),loaded=ref(false)
 const operationsPages=['products','projects','payments','mail','releases']
 const credentials=reactive({username:'admin',password:''}),data=reactive({products:[],projects:[],paymentProviders:[],mailSettings:{},mailQueue:[],customers:[],instances:[],modules:[],entitlements:[],orders:[],licenses:[],releases:[],serviceGroups:[],sharedReleasePlans:[],audit:[]})
 const title=computed(()=>navigation.value.find(item=>item.id===page.value)?.name)
+const recentAudit=computed(()=>data.audit.slice(0,4))
+const searchResults=computed(()=>{
+  const query=globalQuery.value.trim().toLowerCase()
+  if(!query)return []
+  const pool=[
+    ...navigation.value.map(item=>({key:'page:'+item.id,title:item.name,meta:'功能入口',target:item.id,search:item.name})),
+    ...data.customers.map(row=>({key:'customer:'+row.id,title:row.name||row.id,meta:'客户 · '+(row.id||''),target:'customers',search:[row.name,row.id,row.note].filter(Boolean).join(' ')})),
+    ...data.projects.map(row=>({key:'project:'+row.id,title:row.name||row.id,meta:'项目 · '+(row.customer_name||row.customer_id||''),target:'projects',search:[row.name,row.id,row.customer_name,row.customer_id].filter(Boolean).join(' ')})),
+    ...data.instances.map(row=>({key:'instance:'+row.id,title:row.name||row.id,meta:'实例 · '+(row.runtime_tenant_id||row.id),target:'instances',search:[row.name,row.id,row.runtime_tenant_id,...(row.domains||[])].filter(Boolean).join(' ')})),
+    ...data.licenses.map(row=>({key:'license:'+row.id,title:row.id,meta:'授权 · '+(row.customer_name||row.instance_name||''),target:'licenses',search:[row.id,row.customer_name,row.instance_name,row.instance_id].filter(Boolean).join(' ')})),
+    ...data.orders.map(row=>({key:'order:'+row.id,title:row.id,meta:'订单 · '+status(row.status),target:'orders',search:[row.id,row.customer_name,row.instance_name,row.module_name].filter(Boolean).join(' ')}))
+  ]
+  return pool.filter(item=>item.search.toLowerCase().includes(query)).slice(0,8)
+})
 const availableOrderModules=computed(()=>{const instance=data.instances.find(item=>item.id===form.instanceId);return data.modules.filter(item=>item.status==='ACTIVE'&&(!instance||item.product_id===instance.product_id))})
 const availableEntitlementModules=computed(()=>{const instance=data.instances.find(item=>item.id===form.instanceId);return data.modules.filter(item=>(item.status==='ACTIVE'&&item.price_cents!=null||item.id===form.moduleId)&&(!instance||item.product_id===instance.product_id)&&(item.id===form.moduleId||!data.entitlements.some(grant=>grant.instance_id===form.instanceId&&grant.module_id===item.id)))})
 const stats=computed(()=>[
@@ -140,6 +185,12 @@ const processSteps=computed(()=>{
 })
 const {query:search,state:listState,total,rows:records}=useRecords(()=>data[page.value]||[],()=>page.value)
 function go(target){if(target)page.value=target}
+function closeHeaderPanels(){searchOpen.value=false;notificationsOpen.value=false;accountOpen.value=false}
+function openHeaderPanel(panel){searchOpen.value=panel==='search';notificationsOpen.value=panel==='notifications';accountOpen.value=panel==='account'}
+function activateGlobalSearch(){openHeaderPanel('search');nextTick(()=>globalSearchInput.value?.focus())}
+function toggleHeaderPanel(panel){if(panel==='notifications'){const next=!notificationsOpen.value;closeHeaderPanels();notificationsOpen.value=next}else{const next=!accountOpen.value;closeHeaderPanels();accountOpen.value=next}}
+function selectSearchResult(result){page.value=result.target;globalQuery.value='';closeHeaderPanels()}
+function selectFirstSearchResult(){if(searchResults.value[0])selectSearchResult(searchResults.value[0])}
 function money(cents){return '¥'+(Number(cents)/100).toFixed(2)}
 function productName(id){return data.products.find(item=>item.id===id)?.name||id||'—'}
 function time(value){return value?new Date(value).toLocaleString('zh-CN',{hour12:false}):'—'}
@@ -190,12 +241,12 @@ function downloadDelivery(){const url=URL.createObjectURL(new Blob([deliveryText
 async function publish(release){try{await ElMessageBox.confirm('请确认 GitHub Release 与说明已经核对。此操作发布版本信息，不执行客户服务器更新。','发布版本信息',{type:'info'});await api(`/releases/${encodeURIComponent(release.version)}/publish`,{method:'POST',body:{productId:release.product_id}});await refreshAfterWrite();ElMessage.success('版本信息已发布')}catch(error){if(error?.message)ElMessage.error(error.message)}}
 async function connect(){bootError.value='';try{const session=await api('/session');if(session.authenticated){loggedIn.value=true;username.value=session.username;csrf.value=session.csrf;await refresh()}ready.value=true}catch(error){bootError.value='运营服务连接失败：'+error.message}}
 function readPage(){const id=window.location.hash.slice(1);page.value=navigation.value.some(item=>item.id===id)?id:'overview'}
-function escapeMenu(event){if(event.key==='Escape')menuOpen.value=false}
-watch(page,async value=>{window.location.hash=value;menuOpen.value=false;dialog.value=false;deliveryVisible.value=false;window.scrollTo(0,0);await nextTick();heading.value?.focus({preventScroll:true})})
+function escapeMenu(event){if(event.key==='Escape'){menuOpen.value=false;closeHeaderPanels()}}
+watch(page,async value=>{window.location.hash=value;menuOpen.value=false;closeHeaderPanels();dialog.value=false;deliveryVisible.value=false;window.scrollTo(0,0);await nextTick();heading.value?.focus({preventScroll:true})})
 watch(menuOpen,value=>{document.body.style.overflow=value?'hidden':''})
 watch(loggedIn,value=>{if(!value){dialog.value=false;deliveryVisible.value=false}})
-onMounted(()=>{readPage();window.addEventListener('hashchange',readPage);window.addEventListener('keydown',escapeMenu);connect()})
-onUnmounted(()=>{window.removeEventListener('hashchange',readPage);window.removeEventListener('keydown',escapeMenu);document.body.style.overflow=''})
+onMounted(()=>{readPage();window.addEventListener('hashchange',readPage);window.addEventListener('keydown',escapeMenu);document.addEventListener('pointerdown',closeHeaderPanels);connect()})
+onUnmounted(()=>{window.removeEventListener('hashchange',readPage);window.removeEventListener('keydown',escapeMenu);document.removeEventListener('pointerdown',closeHeaderPanels);document.body.style.overflow=''})
 </script>
 <style>
 .el-date-editor.el-input,
