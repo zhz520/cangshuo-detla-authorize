@@ -9,6 +9,7 @@ import { PaymentService } from './payments.mjs'
 import { Support } from './support.mjs'
 import { UsageBilling } from './usage.mjs'
 import { HttpIdentityProvider, IdentityVerificationService } from './identity.mjs'
+import { SmsService } from './sms.mjs'
 import { Readable,Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 
@@ -23,7 +24,7 @@ const requestBaseUrl = request => {
   return `${protocol}://${host}`
 }
 const releaseNotesPage = (productId, release) => `<main><p class="eyebrow">CANGSHUO · RELEASE NOTES</p><h1>软件正式版 ${html(release.version)}</h1><p class="meta">软件 ${html(productId)} · 发布于 ${html(release.published_at)}</p><section><h2>更新说明</h2><pre>${html(release.notes)}</pre></section><section><h2>更新内容</h2>${release.items.length ? `<ul>${release.items.map(item=>`<li><strong>${html(item.name)}</strong>${item.required?' <span class="tag">必要更新</span>':''}${item.description?`<p>${html(item.description)}</p>`:''}</li>`).join('')}</ul>` : '<p>此版本暂未登记可选更新内容。</p>'}</section><p class="foot">此页由授权运营中心提供。</p></main>`
-export function createAuthorityServer(store, { secureCookie = false, staticDirectory, allowedOrigins = [], support = new Support(store), payments = new PaymentService(store) } = {}) {
+export function createAuthorityServer(store, { secureCookie = false, staticDirectory, allowedOrigins = [], support = new Support(store), payments = new PaymentService(store), sms = new SmsService(store) } = {}) {
   const mailer = new Mailer(store)
   const usageBilling = new UsageBilling(store)
   const identityPriceCents = Number(process.env.IDENTITY_PRICE_CENTS || '100')
@@ -126,6 +127,14 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
       }
       if(route==='/api/client/update-plan' && method==='POST')return json(store.releaseService.plan(body))
       if(route==='/api/client/identity/verify' && method==='POST')return json(await identity.verify(body))
+      if (route.startsWith('/api/sms/v1/')) {
+        const instanceId = sms.verifyClient(request.headers, method, route, rawBody, body)
+        if (route === '/api/sms/v1/send' && method === 'POST') return json(await sms.send(instanceId, body, request.headers['idempotency-key']))
+        if (route === '/api/sms/v1/account' && method === 'GET') return json(sms.clientAccount(instanceId))
+        let smsRequest = route.match(/^\/api\/sms\/v1\/requests\/([a-f\d-]{36})$/)
+        if (smsRequest && method === 'GET') return json(sms.requestForInstance(instanceId, smsRequest[1]))
+        fail('短信接口不存在', 404)
+      }
       if(route==='/api/client/artifact' && method==='POST') {
         const {result,size}=await store.releaseService.artifact(body);let bytes=0
         response.writeHead(200,{'Content-Type':'application/zip','Content-Length':String(size)})
@@ -154,6 +163,24 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
         if (route.startsWith('/api/support-admin/')) return await support.owner(route, method, body, url.searchParams, session.username, json, response)
         if (route === '/api/logout' && method === 'POST') { store.logout(token); response.setHeader('Set-Cookie', 'authority_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'); return json({ ok: true }) }
         if (route === '/api/data' && method === 'GET') return json(store.lists())
+        if (route === '/api/sms/settings' && method === 'GET') return json(sms.settings())
+        if (route === '/api/sms/settings' && method === 'PUT') return json(sms.saveSettings(body, session.username))
+        if (route === '/api/sms/templates' && method === 'GET') return json(sms.templates())
+        if (route === '/api/sms/templates' && method === 'POST') return json(sms.saveTemplate(body, session.username), 201)
+        if (route === '/api/sms/packages' && method === 'GET') return json(sms.packages())
+        if (route === '/api/sms/packages' && method === 'POST') return json(sms.savePackage(body, session.username), 201)
+        if (route === '/api/sms/accounts' && method === 'GET') return json(sms.accountRows())
+        if (route === '/api/sms/credentials' && method === 'GET') return json(sms.credentials())
+        if (route === '/api/sms/usage' && method === 'GET') return json(sms.usage(url.searchParams.get('projectId'), url.searchParams.get('limit')))
+        let smsMatch
+        if ((smsMatch = route.match(/^\/api\/sms\/templates\/([a-z0-9_.-]{2,80})$/)) && method === 'PUT') return json(sms.saveTemplate({ ...body, templateKey: smsMatch[1] }, session.username))
+        if ((smsMatch = route.match(/^\/api\/sms\/packages\/([a-f\d-]{36})$/)) && method === 'PUT') return json(sms.savePackage({ ...body, id: smsMatch[1] }, session.username))
+        if ((smsMatch = route.match(/^\/api\/sms\/accounts\/([a-f\d-]{36})$/)) && method === 'GET') return json(sms.accountDetail(smsMatch[1]))
+        if ((smsMatch = route.match(/^\/api\/sms\/accounts\/([a-f\d-]{36})$/)) && method === 'PUT') return json(sms.saveAccount(smsMatch[1], body, session.username))
+        if ((smsMatch = route.match(/^\/api\/sms\/accounts\/([a-f\d-]{36})\/credit$/)) && method === 'POST') return json(sms.credit(smsMatch[1], body.amountCents, body.reference, session.username))
+        if ((smsMatch = route.match(/^\/api\/sms\/accounts\/([a-f\d-]{36})\/packages$/)) && method === 'POST') return json(sms.grantPackage(smsMatch[1], body.packageId, session.username))
+        if ((smsMatch = route.match(/^\/api\/sms\/credentials\/([a-f\d-]{36})\/rotate$/)) && method === 'POST') return json(sms.rotateCredential(smsMatch[1], session.username))
+        if ((smsMatch = route.match(/^\/api\/sms\/requests\/([a-f\d-]{36})\/release$/)) && method === 'POST') return json(sms.releaseUnknown(smsMatch[1], session.username))
         if (route === '/api/runtime/tenants' && method === 'GET') return json(store.runtimeRegistry())
         if (route === '/api/service-groups' && method === 'GET') return json(store.serviceGroupService.list())
         if (route === '/api/service-groups' && method === 'POST') return json(store.serviceGroupService.save(body, session.username), 201)
