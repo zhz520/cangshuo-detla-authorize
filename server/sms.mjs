@@ -254,6 +254,7 @@ export class SmsService {
       this.db.prepare('INSERT INTO sms_ledger(id,project_id,type,amount_cents,balance_after_cents,operator,note,created_at) VALUES (?,?,?,?,?,?,?,?)')
         .run(randomUUID(), id, 'CREDIT', amountCents, balance, actor, optionalText(reference, '充值引用', 128), this.now())
       this.store.audit(actor, 'SMS_CREDIT', id, { amountCents })
+      this.notifyLowBalance(id, balance, this.ensureAccount(id))
       return { projectId: id, balanceCents: balance }
     })
   }
@@ -297,6 +298,25 @@ export class SmsService {
       if (value != null) result[rule.key] = String(value)
     }
     return result
+  }
+
+  notifyProject(projectId, event, key, subject, body) {
+    try {
+      this.store.management.queueProjectMail(projectId, event, key, subject, body)
+    } catch { /* Mail settings are best-effort; billing must not fail because of an alert. */ }
+  }
+
+  notifyLowBalance(projectId, balance, account) {
+    const threshold = Number(account?.low_balance_cents || 0)
+    if (!threshold || balance > threshold) return
+    const day = new Date().toISOString().slice(0, 10)
+    this.notifyProject(projectId, 'SMS_LOW_BALANCE', 'sms-low:' + projectId + ':' + day,
+      '短信余额不足', '项目短信余额为 ¥' + (balance / 100).toFixed(2) + '，低于提醒阈值 ¥' + (threshold / 100).toFixed(2) + '。请及时充值。')
+  }
+
+  notifyPackageEmpty(projectId, packageBalanceId) {
+    this.notifyProject(projectId, 'SMS_PACKAGE_EMPTY', 'sms-package-empty:' + packageBalanceId,
+      '短信套餐已用完', '项目的一个短信套餐已用完，后续发送将按当前计费模式处理。')
   }
 
   checkLimits(account) {
@@ -402,6 +422,8 @@ export class SmsService {
         const changed = this.db.prepare('UPDATE sms_package_balances SET remaining_count=remaining_count-?,reserved_count=reserved_count-?,updated_at=? WHERE id=? AND remaining_count>=? AND reserved_count>=?')
           .run(request.billing_units, request.billing_units, time, request.package_balance_id, request.billing_units, request.billing_units).changes
         if (!changed) throw new Error('SMS_PACKAGE_RESERVATION_BROKEN')
+        const pkg = this.db.prepare('SELECT remaining_count,reserved_count FROM sms_package_balances WHERE id=?').get(request.package_balance_id)
+        if (pkg && pkg.remaining_count - pkg.reserved_count <= 0) this.notifyPackageEmpty(request.project_id, request.package_balance_id)
       } else if (request.billing_status === 'RESERVED' && request.billing_mode === 'METERED') {
         const wallet = this.db.prepare('SELECT * FROM sms_wallets WHERE project_id=?').get(request.project_id)
         const balance = wallet.balance_cents - request.charge_cents
@@ -410,6 +432,7 @@ export class SmsService {
         this.db.prepare('UPDATE sms_wallets SET balance_cents=?,reserved_cents=?,updated_at=? WHERE project_id=?').run(balance, reserved, time, request.project_id)
         this.db.prepare('INSERT INTO sms_ledger(id,project_id,instance_id,request_id,type,amount_cents,balance_after_cents,operator,note,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
           .run(randomUUID(), request.project_id, request.instance_id, request.id, 'CHARGE', request.charge_cents, balance, 'system', '短信发送成功', time)
+        this.notifyLowBalance(request.project_id, balance, this.ensureAccount(request.project_id))
       }
       this.db.prepare("UPDATE sms_requests SET status='ACCEPTED',billing_status=?,provider_request_id=?,provider_message_id=?,completed_at=?,updated_at=? WHERE id=?")
         .run(request.billing_mode === 'FREE' ? 'FREE' : 'CHARGED', result?.requestId || '', result?.bizId || '', time, time, request.id)
