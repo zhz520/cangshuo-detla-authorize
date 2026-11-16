@@ -1,5 +1,5 @@
 import { createApp, h } from 'vue'
-import { ElAlert, ElButton, ElCard, ElCheckbox, ElCheckboxGroup, ElDatePicker, ElDialog, ElForm, ElFormItem, ElInput, ElInputNumber, ElLoading, ElOption, ElPagination, ElSelect, ElSwitch, ElTable, ElTableColumn, ElTag, ElUpload, ElConfigProvider } from 'element-plus'
+import { ElMessage, ElAlert, ElButton, ElCard, ElCheckbox, ElCheckboxGroup, ElDatePicker, ElDialog, ElForm, ElFormItem, ElInput, ElInputNumber, ElLoading, ElOption, ElPagination, ElSelect, ElSwitch, ElTable, ElTableColumn, ElTag, ElUpload, ElConfigProvider } from 'element-plus'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import 'element-plus/es/components/alert/style/css.mjs'
 import 'element-plus/es/components/button/style/css.mjs'
@@ -25,6 +25,23 @@ import 'element-plus/es/components/tag/style/css.mjs'
 import 'element-plus/es/components/upload/style/css.mjs'
 import App from './App.vue'
 import './style.css'
+import './styles/redesign.css'
+const messageSeen = new Map()
+const messageDurations = { success: 3000, info: 4000, warning: 5000, error: 6000 }
+for (const type of Object.keys(messageDurations)) {
+  const original = ElMessage[type]
+  if (typeof original !== 'function') continue
+  ElMessage[type] = (message, options = {}) => {
+    const payload = message && typeof message === 'object' && !Array.isArray(message) ? { ...message } : { message }
+    const text = String(payload.message || '')
+    const key = type + ':' + text
+    const now = Date.now()
+    if (messageSeen.get(key) > now - 1200) return
+    messageSeen.set(key, now)
+    if (messageSeen.size > 80) messageSeen.delete(messageSeen.keys().next().value)
+    return original({ ...payload, ...(options && typeof options === 'object' ? options : {}), showClose: true, duration: payload.duration ?? messageDurations[type] })
+  }
+}
 const app = createApp({ render: () => h(ElConfigProvider, { locale: zhCn }, () => h(App)) })
 for (const component of [ElAlert, ElButton, ElCard, ElCheckbox, ElCheckboxGroup, ElDatePicker, ElDialog, ElForm, ElFormItem, ElInput, ElInputNumber, ElOption, ElPagination, ElSelect, ElSwitch, ElTable, ElTableColumn, ElTag, ElUpload]) app.component(component.name, component)
 app.use(ElLoading).mount('#app')

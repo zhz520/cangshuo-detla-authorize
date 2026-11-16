@@ -5,18 +5,63 @@
       <el-form label-position="top" @submit.prevent="login"><el-form-item label="运营账号"><el-input v-model="credentials.username" autocomplete="username" /></el-form-item><el-form-item label="密码"><el-input v-model="credentials.password" type="password" autocomplete="current-password" show-password /></el-form-item><el-button native-type="submit" type="primary" :loading="loginBusy" class="login-submit">登录运营后台</el-button></el-form>
     </section>
   </main>
-  <div v-else class="shell">
-    <button v-if="menuOpen" class="nav-backdrop" aria-label="关闭菜单" @click="menuOpen=false"/><aside :class="{'is-open':menuOpen}"><div class="brand"><div class="brand-mark">C</div><div><strong>沧烁授权中心</strong><small>系统运营工作台</small></div></div><nav class="nav-scroll" aria-label="运营菜单"><section v-for="group in navigationGroups" :key="group.name" class="nav-section"><div class="nav-label">{{ group.name }}</div><button v-for="item in group.items" :key="item.id" :class="{selected:page===item.id}" :aria-current="page===item.id?'page':undefined" :title="item.name" @click="page=item.id;menuOpen=false"><component :is="item.icon"/><span>{{ item.name }}</span></button></section></nav><div class="aside-bottom">独立运营后台<br/>客户业务系统单独维护</div></aside>
-    <div class="workspace"><header><div class="header-title"><button class="menu-toggle" aria-label="打开菜单" :aria-expanded="menuOpen" @click="menuOpen=!menuOpen">☰</button><span class="breadcrumb">平台运营 / </span><strong>{{ title }}</strong></div><div class="header-actions"><el-tag type="success">在线授权</el-tag><span>{{ username }}</span><el-button text :loading="logoutBusy" @click="logout">退出</el-button></div></header>
+  <div v-else class="shell" :class="{ 'is-collapsed': sidebarCollapsed }">
+    <button v-if="menuOpen" class="nav-backdrop" aria-label="关闭菜单" @click="menuOpen=false"/><aside :class="{'is-open':menuOpen}"><div class="brand"><div class="brand-mark">C</div><div class="brand-copy"><strong>沧烁授权中心</strong><small>系统运营工作台</small></div></div><nav class="nav-scroll" aria-label="运营菜单"><section v-for="group in navigationGroups" :key="group.name" class="nav-section"><div class="nav-label">{{ group.name }}</div><button v-for="item in group.items" :key="item.id" :class="{selected:page===item.id}" :aria-current="page===item.id?'page':undefined" :title="item.name" @click="page=item.id;menuOpen=false"><component :is="item.icon"/><span>{{ item.name }}</span></button></section></nav><div class="aside-bottom">独立运营后台<br/>客户业务系统单独维护</div></aside>
+    <div class="workspace"><header>
+      <div class="header-title">
+        <button class="menu-toggle" aria-label="打开菜单" :aria-expanded="menuOpen" @click="menuOpen=!menuOpen">☰</button>
+        <button class="collapse-toggle" aria-label="折叠侧栏" :aria-expanded="!sidebarCollapsed" @click="sidebarCollapsed=!sidebarCollapsed">☰</button>
+        <span class="breadcrumb">平台运营 / 授权中心 / </span><strong>{{ title }}</strong>
+      </div>
+      <div class="header-actions">
+        <span class="online-status"><i></i>在线授权</span>
+        <div class="user-chip"><span class="user-avatar">{{ username.slice(0, 1) }}</span><span>{{ username }}</span></div>
+        <el-button text :loading="logoutBusy" @click="logout">退出</el-button>
+      </div>
+    </header>
       <section class="content" :aria-busy="busy">
         <div class="page-heading"><div><p class="eyebrow">{{ page==='overview'?'CONTROL CENTER':'PLATFORM MANAGEMENT' }}</p><h1 ref="heading" tabindex="-1">{{ title }}</h1><p class="muted">{{ descriptions[page] }}</p></div><div class="actions"><el-button :loading="busy" @click="refresh">{{ busy?'加载中':'刷新' }}</el-button><el-button v-if="createActions[page]" type="primary" @click="open(createActions[page])">{{ createLabels[page] }}</el-button><el-button v-if="page==='licenses'" type="primary" @click="showPublicKey">查看验证公钥</el-button></div></div>
         <el-alert v-if="dataError" class="data-error" :title="(loaded?'刷新失败，当前显示上次加载的数据：':'数据加载失败：')+dataError" type="error" :closable="false" show-icon/><div v-if="busy&&!loaded" class="page-loading" role="status">正在加载运营数据…</div>
         <template v-if="loaded&&page==='overview'">
-          <div class="stats"><article v-for="item in stats" :key="item.name"><span>{{ item.name }}</span><strong>{{ item.value }}</strong><small>{{ item.detail }}</small></article></div>
-          <el-card shadow="never"><template #header><div class="section-title">开通流程 <el-tag type="success" size="small">在线购买 / 人工开通</el-tag></div></template><div class="steps"><div v-for="(step,index) in ['登记客户和实例','配置功能与价格','客户在线购买或人工维护期接入','授权自动签发并同步']" :key="step"><b>{{ index+1 }}</b><span>{{ step }}</span></div></div><p class="muted">在线支付由微信回调验签后确认，人工订单由运营人员核对收款。客户系统仅使用验证公钥；签发私钥保留在本运营中心。</p></el-card>
-          <el-card shadow="never" class="panel"><template #header>最近操作</template><el-table :data="data.audit.slice(0,6)" stripe><el-table-column label="时间" min-width="180"><template #default="{row}">{{ time(row.created_at) }}</template></el-table-column><el-table-column prop="actor" label="运营账号"/><el-table-column label="操作" min-width="170"><template #default="{row}">{{ actionLabels[row.action] || row.action }}</template></el-table-column><el-table-column prop="target" label="关联编号" min-width="240" show-overflow-tooltip/></el-table></el-card>
+          <section class="overview-hero">
+            <div class="hero-copy">
+              <span class="hero-line"></span>
+              <p class="hero-eyebrow">CONTROL CENTER</p>
+              <h2>沧烁授权中心</h2>
+              <p>统一管理客户授权、开通流程与交付状态。</p>
+            </div>
+            <div class="hero-visual" aria-hidden="true"><span class="hero-shape shape-a"></span><span class="hero-shape shape-b"></span><span class="hero-shape shape-c"></span></div>
+          </section>
+          <div class="stats">
+            <article v-for="item in stats" :key="item.name" class="stat-card" @click="go(item.target)">
+              <div class="stat-head"><span class="stat-icon"><component :is="item.icon" /></span><span class="stat-name">{{ item.name }}</span><span class="stat-arrow">›</span></div>
+              <strong>{{ item.value }}</strong>
+              <small>{{ item.detail }}</small>
+            </article>
+          </div>
+          <el-card shadow="never" class="overview-card process-card">
+            <template #header><div class="section-title"><span>开通流程</span><el-button type="primary" @click="open('project')">立即开通 <span class="button-arrow">›</span></el-button></div></template>
+            <div class="process-track">
+              <div v-for="(step,index) in processSteps" :key="step.title" class="process-step" :class="{ done: step.done, active: step.active }">
+                <span class="process-node">{{ index + 1 }}</span>
+                <div class="process-copy"><strong>{{ step.title }}</strong><small>{{ step.subtitle }}</small></div>
+              </div>
+            </div>
+            <p class="process-note">在线支付由微信回调验签后确认，人工订单由运营人员核对收款。客户系统只使用验证公钥，签发私钥保留在本运营中心。</p>
+          </el-card>
+          <el-card shadow="never" class="overview-card recent-card">
+            <template #header><div class="section-title"><span>最近操作</span><el-button text @click="page='audit'">查看更多 <span class="button-arrow">›</span></el-button></div></template>
+            <el-table :data="data.audit.slice(0,6)" class="recent-table">
+              <el-table-column label="时间" min-width="180"><template #default="{row}">{{ time(row.created_at) }}</template></el-table-column>
+              <el-table-column prop="actor" label="运营账号" min-width="120"/>
+              <el-table-column label="操作" min-width="180"><template #default="{row}">{{ actionLabels[row.action] || row.action }}</template></el-table-column>
+              <el-table-column prop="target" label="关联编号" min-width="240" show-overflow-tooltip/>
+              <el-table-column label="状态" width="110"><template #default><el-tag size="small" type="success">已完成</el-tag></template></el-table-column>
+            </el-table>
+            <el-empty v-if="!data.audit.length" description="暂无操作记录" />
+          </el-card>
         </template>
-        <SupportAdmin v-if="loaded&&page==='support'" :api="api" :customers="data.customers"/>
+                <SupportAdmin v-if="loaded&&page==='support'" :api="api" :customers="data.customers"/>
         <UsageAccounts v-if="loaded&&page==='usage'" :api="api"/>
         <KeepAlive><Operations v-if="loaded&&operationsPages.includes(page)" :page="page" :data="data" :api="api" :refresh="refreshAfterWrite" @publish="publish"/></KeepAlive>
         <KeepAlive><ServiceGroups v-if="loaded&&page==='serviceGroups'" :data="data" :api="api" :refresh="refreshAfterWrite"/></KeepAlive>
@@ -59,26 +104,42 @@ const Operations=defineAsyncComponent({loader:()=>import('./Operations.vue'),del
 const ServiceGroups=defineAsyncComponent({loader:()=>import('./ServiceGroups.vue'),delay:120,timeout:30000,loadingComponent:{render:()=>h('div',{class:'page-loading',role:'status'},'正在加载服务组页面…')},errorComponent:{render:()=>h('div',{class:'page-loading',role:'alert'},['页面资源加载失败，请检查网络。',h('button',{onClick:()=>window.location.reload()},'重新加载')])}})
 const SupportAdmin=defineAsyncComponent(()=>import('./SupportAdmin.vue'))
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { HomeFilled, UserFilled, Monitor, Goods, Document, Key, UploadFilled, Clock, Connection, CreditCard } from '@element-plus/icons-vue'
+import { HomeFilled, User, Monitor, Goods, Document, Key, UploadFilled, Clock, Connection, CreditCard } from '@element-plus/icons-vue'
 const navigationGroups=[
   {name:'工作台',items:[{id:'overview',name:'运营概览',icon:HomeFilled},{id:'support',name:'在线客服',icon:Connection}]},
-  {name:'客户与项目',items:[{id:'customers',name:'客户管理',icon:UserFilled},{id:'projects',name:'项目管理',icon:Monitor},{id:'instances',name:'实例接入',icon:Connection},{id:'products',name:'软件中心',icon:Goods}]},
+  {name:'客户与项目',items:[{id:'customers',name:'客户管理',icon:User},{id:'projects',name:'项目管理',icon:Monitor},{id:'instances',name:'实例接入',icon:Connection},{id:'products',name:'软件中心',icon:Goods}]},
   {name:'授权与发布',items:[{id:'modules',name:'功能与定价',icon:Goods},{id:'entitlements',name:'客户功能',icon:Key},{id:'usage',name:'实名用量账户',icon:CreditCard},{id:'orders',name:'购买订单',icon:Document},{id:'licenses',name:'授权管理',icon:Key},{id:'releases',name:'版本发布',icon:UploadFilled},{id:'serviceGroups',name:'服务组发布',icon:Connection}]},
   {name:'系统设置',items:[{id:'payments',name:'支付设置',icon:CreditCard},{id:'mail',name:'邮件通知',icon:Connection},{id:'audit',name:'操作记录',icon:Clock}]}
 ]
 const navigation=computed(()=>navigationGroups.flatMap(group=>group.items))
-const descriptions={overview:'一个运营中心，管理所有客户的功能授权。',support:'管理授权中心在线客服会话与客户入口。',customers:'登记客户编号与名称，与客户系统独立维护。',instances:'将授权绑定到客户系统显示的实例编号。',modules:'先确认价格与期限，再开放客户在线购买。',entitlements:'按实例维护每项付费功能的授权状态、有效期和续费。',usage:'管理实名核验的按次余额、冻结金额、核验请求和资金流水。',products:'登记不同类型的软件项目与 GitHub 正式版仓库。',projects:'按项目维护到期时间、暂停策略、支付接入和通知邮箱。',payments:'统一维护授权中心收款参数，再由项目选择可用支付方式。',mail:'配置邮箱发信与查看重要通知发送记录。',orders:'查看客户在线购买、人工维护期接入和授权签发记录。',licenses:'查看与交付签名授权，签发私钥留在运营中心。',releases:'维护客户端的版本目录与发布说明。',serviceGroups:'登记多租户服务组成员，签发共享发布计划。',audit:'保留客户登记、在线收款、退款和签发记录。'}
+const descriptions={overview:'统一管理客户授权、开通流程与交付状态。',support:'管理授权中心在线客服会话与客户入口。',customers:'登记客户编号与名称，与客户系统独立维护。',instances:'将授权绑定到客户系统显示的实例编号。',modules:'先确认价格与期限，再开放客户在线购买。',entitlements:'按实例维护每项付费功能的授权状态、有效期和续费。',usage:'管理实名核验的按次余额、冻结金额、核验请求和资金流水。',products:'登记不同类型的软件项目与 GitHub 正式版仓库。',projects:'按项目维护到期时间、暂停策略、支付接入和通知邮箱。',payments:'统一维护授权中心收款参数，再由项目选择可用支付方式。',mail:'配置邮箱发信与查看重要通知发送记录。',orders:'查看客户在线购买、人工维护期接入和授权签发记录。',licenses:'查看与交付签名授权，签发私钥留在运营中心。',releases:'维护客户端的版本目录与发布说明。',serviceGroups:'登记多租户服务组成员，签发共享发布计划。',audit:'保留客户登记、在线收款、退款和签发记录。'}
 const actionLabels={SAVE_PRODUCT:'保存软件与仓库',UPDATE_CUSTOMER:'更新客户',DELETE_CUSTOMER:'删除客户',CREATE_PROJECT:'新增项目',UPDATE_PROJECT:'更新项目维护',CREATE_MODULE:'登记功能模块',UPDATE_MAIL_SETTINGS:'保存邮箱配置',QUEUE_TEST_MAIL:'测试发信',RETRY_MAIL:'重试邮件',UPDATE_RELEASE_ITEMS:'配置更新内容',CREATE_UPDATE_PLAN:'生成更新计划',REISSUE_MAINTENANCE_LICENSE:'同步维护授权',EXPORT_INSTANCE_IDENTITY:'导出实例接入凭据',CLIENT_VERSION_REPORT:'客户端版本上报',LOGIN:'登录后台',CREATE_CUSTOMER:'登记客户',CREATE_INSTANCE:'登记实例',UPDATE_INSTANCE:'更新授权域名/维护期',CREATE_SERVICE_GROUP:'新增共享服务组',UPDATE_SERVICE_GROUP:'更新共享服务组',CREATE_SHARED_RELEASE_PLAN:'签发共享发布计划',UPDATE_MODULE:'调整模块价格',CREATE_ORDER:'创建功能订单',CONFIRM_ONLINE_PAYMENT:'在线支付自动确认',CONFIRM_MANUAL_PAYMENT:'确认人工收款',UPLOAD_PAYMENT_KEY:'上传支付密钥',UPDATE_PLUGIN:'配置客户插件',GRANT_MAINTENANCE_ACCESS:'维护期接入',ISSUE_LICENSE:'签发授权',CREATE_ENTITLEMENT:'新增客户功能',UPDATE_ENTITLEMENT:'编辑客户功能',DELETE_ENTITLEMENT:'删除客户功能',CREATE_RELEASE_DRAFT:'登记版本草稿',PUBLISH_RELEASE_METADATA:'发布版本信息'}
 const createActions={customers:'customer',instances:'instance',entitlements:'entitlement',orders:'order',modules:'newModule',releases:'release'},createLabels={customers:'新增客户',instances:'登记实例',entitlements:'新增客户功能',orders:'创建订单',modules:'新增功能模块',releases:'新增版本'}
-const menuOpen=ref(false)
+const menuOpen=ref(false), sidebarCollapsed=ref(false)
 const ready=ref(false),bootError=ref(''),loggedIn=ref(false),username=ref(''),csrf=ref(''),busy=ref(false),saving=ref(false),loginBusy=ref(false),logoutBusy=ref(false),page=ref('overview'),heading=ref(null),dataError=ref(''),loaded=ref(false)
 const operationsPages=['products','projects','payments','mail','releases']
 const credentials=reactive({username:'admin',password:''}),data=reactive({products:[],projects:[],paymentProviders:[],mailSettings:{},mailQueue:[],customers:[],instances:[],modules:[],entitlements:[],orders:[],licenses:[],releases:[],serviceGroups:[],sharedReleasePlans:[],audit:[]})
 const title=computed(()=>navigation.value.find(item=>item.id===page.value)?.name)
 const availableOrderModules=computed(()=>{const instance=data.instances.find(item=>item.id===form.instanceId);return data.modules.filter(item=>item.status==='ACTIVE'&&(!instance||item.product_id===instance.product_id))})
 const availableEntitlementModules=computed(()=>{const instance=data.instances.find(item=>item.id===form.instanceId);return data.modules.filter(item=>(item.status==='ACTIVE'&&item.price_cents!=null||item.id===form.moduleId)&&(!instance||item.product_id===instance.product_id)&&(item.id===form.moduleId||!data.entitlements.some(grant=>grant.instance_id===form.instanceId&&grant.module_id===item.id)))})
-const stats=computed(()=>[{name:'已登记客户',value:data.customers.length,detail:'独立客户档案'},{name:'客户实例',value:data.instances.length,detail:'按实例绑定授权'},{name:'待确认收款',value:data.orders.filter(order=>order.status==='UNPAID').length,detail:'在线支付或人工核对'},{name:'已签发授权',value:data.licenses.length,detail:'完整交付记录'}])
+const stats=computed(()=>[
+  {name:'已登记客户',value:data.customers.length,detail:'在册客户主体',target:'customers',icon:User},
+  {name:'客户实例',value:data.instances.length,detail:'按实例绑定授权',target:'instances',icon:Monitor},
+  {name:'待确认收款',value:data.orders.filter(order=>order.status==='UNPAID').length,detail:'在线支付或人工核对',target:'orders',icon:Document},
+  {name:'已签发授权',value:data.licenses.length,detail:'完成交付的授权记录',target:'licenses',icon:Key}
+])
+const processSteps=computed(()=>{
+  const done=[data.customers.length>0&&data.instances.length>0,data.modules.some(item=>item.price_cents!=null&&item.status==='ACTIVE'),data.orders.some(item=>['PAID','MAINTENANCE'].includes(item.status)),data.licenses.length>0]
+  const active=Math.max(0,done.findIndex(item=>!item))
+  return [
+    ['登记客户和实例','创建客户并登记实例信息'],
+    ['配置功能与价格','选择授权功能与定价方案'],
+    ['客户在线购买或人工确认','在线支付或运营人工核对收款'],
+    ['授权自动签发并同步','完成签发并同步客户系统']
+  ].map(([title,subtitle],index)=>({title,subtitle,done:done[index],active:index===active&&!done[index]}))
+})
 const {query:search,state:listState,total,rows:records}=useRecords(()=>data[page.value]||[],()=>page.value)
+function go(target){if(target)page.value=target}
 function money(cents){return '¥'+(Number(cents)/100).toFixed(2)}
 function productName(id){return data.products.find(item=>item.id===id)?.name||id||'—'}
 function time(value){return value?new Date(value).toLocaleString('zh-CN',{hour12:false}):'—'}
