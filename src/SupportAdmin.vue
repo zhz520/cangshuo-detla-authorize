@@ -13,6 +13,11 @@ const activeCustomers=computed(()=>props.customers.filter(row=>row.status==='ACT
 const statuses={OPEN:'待复核',CONFIRMED:'已确认',DISMISSED:'已排除'}
 const time=value=>value?new Date(value).toLocaleString('zh-CN',{hour12:false}):'—'
 const sitePath=row=>'/chat/'+row.slug
+const supportMetrics=computed(()=>[
+  {label:'客服站点',value:sites.value.length,detail:'已开通的客户客服入口'},
+  {label:'已开放',value:sites.value.filter(row=>row.enabled&&row.customer_status==='ACTIVE').length,detail:'当前可访问站点'},
+  {label:'待复核告警',value:alerts.value.filter(row=>row.status==='OPEN').length,detail:'当前告警列表中的线索'}
+])
 let revision=0
 async function refresh(){
   const id=++revision
@@ -92,7 +97,11 @@ async function testModeration(){
 </script>
 
 <template>
-  <el-card shadow="never" class="support-admin">
+  <section class="workspace-page support-admin">
+    <div class="insight-grid"><article v-for="metric in supportMetrics" :key="metric.label" class="insight-card"><span>{{ metric.label }}</span><strong>{{ metric.value }}</strong><small>{{ metric.detail }}</small></article></div>
+    <section class="workspace-panel">
+      <header class="workspace-panel-head"><div class="workspace-panel-title"><h2>在线客服运营</h2><p>管理客户客服入口、会话记录、风险线索和审核通知。</p></div><span class="panel-count">{{ sites.length }}<small>个站点</small></span></header>
+      <div class="workspace-table-body support-body">
     <div class="support-admin-toolbar">
       <div aria-label="客服运营菜单"><el-button :type="tab==='sites'?'primary':'default'" @click="switchTab('sites')">客服站点</el-button><el-button :type="tab==='history'?'primary':'default'" @click="switchTab('history')">会话记录</el-button><el-button :type="tab==='alerts'?'primary':'default'" @click="switchTab('alerts')">风险告警</el-button><el-button :type="tab==='moderation'?'primary':'default'" @click="switchTab('moderation')">审核与通知</el-button></div>
       <div v-if="tab!=='history'"><el-button :loading="busy" @click="refresh">刷新</el-button><el-button v-if="tab==='sites'" type="primary" :disabled="!activeCustomers.length" @click="edit()">新增客服站点</el-button></div>
@@ -166,18 +175,25 @@ async function testModeration(){
       </template>
       <template v-if="detail?.status==='OPEN'" #footer><el-button :disabled="!resolution.trim()||saving" @click="resolve('DISMISSED')">排除告警</el-button><el-button type="danger" :loading="saving" :disabled="!resolution.trim()" @click="resolve('CONFIRMED')">确认风险</el-button></template>
     </el-dialog>
-  </el-card>
+      </div>
+    </section>
+  </section>
 </template>
 
 <style scoped>
-.support-admin-toolbar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:10px}
+.support-body{padding:18px 22px 22px}
+.support-admin-toolbar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:16px}
 .support-admin-toolbar>div{display:flex;align-items:center;flex-wrap:wrap;gap:6px}
 .support-admin-toolbar .el-button+.el-button{margin:0}
+.support-admin-toolbar>[aria-label="客服运营菜单"]{padding:4px;border-radius:9px;background:#f7f8fa}
+.support-admin-toolbar>[aria-label="客服运营菜单"] .el-button{border:0;background:transparent;box-shadow:none}
+.support-admin-toolbar>[aria-label="客服运营菜单"] .el-button--primary{background:#fff;color:#17191d;box-shadow:0 1px 2px rgba(16,24,40,.08)}
 .support-status{width:150px}
 .support-excerpt{padding:12px;background:#f1f5fa;border-radius:8px;white-space:pre-wrap;overflow-wrap:anywhere;font:inherit}
 .moderation-status{display:flex;align-items:center;gap:12px;margin-top:16px}
 .model-form{max-width:560px;margin-top:20px}
 @media(max-width:560px){
+  .support-body{padding:16px 2px}
   .support-admin-toolbar>[aria-label="客服运营菜单"]{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%;padding:5px;background:#f2f5fa;border-radius:11px}
   .support-admin-toolbar>[aria-label="客服运营菜单"] .el-button{min-height:42px;margin:0;padding-inline:8px}
   .support-admin-toolbar .muted{margin:0}

@@ -1,8 +1,10 @@
 <template>
-  <el-card shadow="never">
-    <template #header><div class="usage-head"><strong>实名核验服务账户</strong><el-button :loading="loading" @click="load">刷新</el-button></div></template>
-    <el-alert title="按次核验使用独立服务余额；客户功能授权与核验余额是两层控制，缺一不可。" type="info" :closable="false" show-icon/>
-    <el-table :data="rows" stripe v-loading="loading" class="usage-table">
+  <section class="workspace-page">
+    <div class="insight-grid"><article v-for="metric in metrics" :key="metric.label" class="insight-card"><span>{{ metric.label }}</span><strong>{{ metric.value }}</strong><small>{{ metric.detail }}</small></article></div>
+    <section class="workspace-panel">
+      <header class="workspace-panel-head"><div class="workspace-panel-title"><h2>实名核验服务账户</h2><p>按次核验使用独立服务余额；客户功能授权与核验余额是两层控制，缺一不可。</p></div><div class="workspace-panel-actions"><span class="panel-count">{{ rows.length }}<small>个账户</small></span><el-button :loading="loading" @click="load">刷新</el-button></div></header>
+      <div class="workspace-table-body">
+      <el-table :data="rows" stripe v-loading="loading" class="usage-table">
       <el-table-column prop="customer_name" label="客户" min-width="130"/>
       <el-table-column label="实例" min-width="210"><template #default="{row}"><span>{{ row.instance_name }}</span><br/><small class="muted">{{ row.instance_id }}</small></template></el-table-column>
       <el-table-column label="可用余额" width="120"><template #default="{row}">{{ money(row.balance_cents) }}</template></el-table-column>
@@ -10,8 +12,10 @@
       <el-table-column label="状态" width="100"><template #default="{row}"><el-tag :type="row.status==='ACTIVE'?'success':'danger'">{{ row.status==='ACTIVE'?'启用':'停用' }}</el-tag></template></el-table-column>
       <el-table-column label="更新时间" min-width="170"><template #default="{row}">{{ time(row.updated_at) }}</template></el-table-column>
       <el-table-column label="操作" min-width="240" fixed="right"><template #default="{row}"><el-button link type="primary" @click="openCredit(row)">充值</el-button><el-button link @click="showDetail(row)">流水</el-button><el-button link :type="row.status==='ACTIVE'?'danger':'success'" @click="toggle(row)">{{ row.status==='ACTIVE'?'停用':'启用' }}</el-button></template></el-table-column>
-    </el-table>
-  </el-card>
+      </el-table>
+      </div>
+    </section>
+  </section>
 
   <el-dialog v-model="creditVisible" title="服务账户充值" width="min(460px,94vw)">
     <p class="muted">{{ current?.customer_name }} / {{ current?.instance_name }}</p>
@@ -28,7 +32,7 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 const props = defineProps({ api: Function })
 const rows = ref([]), loading = ref(false), saving = ref(false)
@@ -36,6 +40,11 @@ const current = ref(null), creditVisible = ref(false), creditAmount = ref(''), c
 const detailVisible = ref(false), detailTab = ref('requests'), requests = ref([]), ledger = ref([])
 const money = cents => '¥' + (Number(cents || 0) / 100).toFixed(2)
 const time = value => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—'
+const metrics = computed(() => [
+  { label: '服务账户', value: rows.value.length, detail: '已开通实名核验的实例' },
+  { label: '可用余额', value: money(rows.value.reduce((sum, row) => sum + Number(row.balance_cents || 0), 0)), detail: '全部账户可用余额' },
+  { label: '暂停账户', value: rows.value.filter(row => row.status !== 'ACTIVE').length, detail: '需要检查授权或余额' }
+])
 async function load() {
   loading.value = true
   try { rows.value = await props.api('/usage/accounts') }

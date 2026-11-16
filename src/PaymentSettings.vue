@@ -1,20 +1,21 @@
 <template>
   <div class="payment-settings" :aria-busy="saving || !!uploadingKey">
     <section class="payment-overview">
-      <div>
-        <p class="eyebrow">PAYMENT CONTROL</p>
-        <h2>系统支付能力</h2>
-        <p>在系统级维护商户参数，再由项目选择支付接入和开放方式。</p>
+      <div class="payment-overview-copy">
+        <span class="overview-kicker"><i></i>支付基础设施</span>
+        <h2>{{ enabledProviders.length ? '支付通道已就绪' : '配置支付通道' }}</h2>
+        <p>统一维护商户参数；项目只选择可用通道和开放方式，密钥不进入项目配置。</p>
       </div>
-      <el-tag :type="enabledProviders.length ? 'success' : 'info'" effect="dark">
-        {{ enabledProviders.length ? '支付已接入' : '待配置支付' }}
-      </el-tag>
+      <div class="payment-overview-meta">
+        <span>{{ enabledProviders.length }} / {{ providers.length }} 个通道启用</span>
+        <el-tag :type="enabledProviders.length ? 'success' : 'info'" effect="light" round>{{ enabledProviders.length ? '运行中' : '待配置' }}</el-tag>
+      </div>
     </section>
 
     <div class="payment-summary">
-      <article><span>已启用通道</span><strong>{{ enabledProviders.length }}</strong><small>{{ providers.length }} 个可用通道</small></article>
-      <article><span>已接入项目</span><strong>{{ configuredProjects }}</strong><small>共 {{ projects.length }} 个项目</small></article>
-      <article><span>开放方式</span><strong>{{ activeMethods.length }}</strong><small>{{ methodSummary }}</small></article>
+      <article class="insight-card"><span>已启用通道</span><strong>{{ enabledProviders.length }}</strong><small>{{ providers.length }} 个可用通道</small></article>
+      <article class="insight-card"><span>已接入项目</span><strong>{{ configuredProjects }}</strong><small>共 {{ projects.length }} 个项目</small></article>
+      <article class="insight-card"><span>开放方式</span><strong>{{ activeMethods.length }}</strong><small>{{ methodSummary }}</small></article>
     </div>
 
     <el-alert v-if="dirty" title="支付设置有未保存的修改" type="warning" :closable="false" show-icon />
@@ -30,7 +31,7 @@
           <el-tag :type="paymentForms[provider.id]?.enabled ? 'success' : 'info'" effect="plain">
             {{ paymentForms[provider.id]?.enabled ? '已启用' : '已停用' }}
           </el-tag>
-          <el-switch v-model="paymentForms[provider.id].enabled" :aria-label="`系统启用${provider.name}`" />
+          <span class="provider-switch-label">{{ paymentForms[provider.id]?.enabled ? '系统启用' : '系统停用' }}</span><el-switch v-model="paymentForms[provider.id].enabled" :aria-label="`系统启用${provider.name}`" />
         </div>
       </header>
 
@@ -182,47 +183,50 @@ async function uploadPaymentKey(provider, field, file) {
 </script>
 
 <style scoped>
-.payment-settings { display: grid; gap: 18px; }
-.payment-overview { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 24px; border: 1px solid #dce5f2; border-radius: 16px; background: linear-gradient(135deg, #f7faff 0%, #fff 58%); }
-.payment-overview h2 { margin: 0 0 6px; font-size: 24px; letter-spacing: -.5px; }
-.payment-overview p { margin: 0; color: #718099; line-height: 1.7; }
-.payment-overview .eyebrow { margin-bottom: 8px; }
-.payment-overview .el-tag { margin-top: 4px; }
+.payment-settings { display: grid; gap: 16px; }
+.payment-overview { display: flex; align-items: center; justify-content: space-between; gap: 28px; min-height: 132px; padding: 26px 28px; overflow: hidden; border: 1px solid #eef0f4; border-radius: 14px; background: #fff; box-shadow: 0 1px 2px rgba(16,24,40,.025); }
+.payment-overview-copy { min-width: 0; }
+.overview-kicker { display: inline-flex; align-items: center; gap: 8px; margin-bottom: 10px; color: #667085; font-size: 10px; font-weight: 650; letter-spacing: .05em; }
+.overview-kicker i { width: 18px; height: 2px; background: #17191d; }
+.payment-overview h2 { margin: 0 0 6px; color: #17191d; font-size: 24px; font-weight: 750; letter-spacing: -.55px; }
+.payment-overview p { max-width: 660px; margin: 0; color: #667085; line-height: 1.7; }
+.payment-overview-meta { display: grid; justify-items: end; gap: 10px; flex: 0 0 auto; color: #667085; font-size: 11px; }
 .payment-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
-.payment-summary article { padding: 17px 18px; border: 1px solid #e1e8f1; border-radius: 12px; background: #fff; }
-.payment-summary span, .payment-summary small { display: block; color: #7d899b; font-size: 12px; }
-.payment-summary strong { display: block; margin: 4px 0; color: #24334a; font-size: 27px; }
-.provider-card { overflow: hidden; border: 1px solid #dfe7f1; border-radius: 16px; background: #fff; box-shadow: 0 12px 30px rgba(28, 49, 84, .06); }
-.provider-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 22px 24px; background: #f8faff; border-bottom: 1px solid #e9eff7; }
-.provider-header h3, .project-heading h3 { margin: 0 0 6px; font-size: 19px; color: #24334a; }
-.provider-header p, .project-heading p, .method-heading p { margin: 0; color: #7b8799; font-size: 13px; line-height: 1.65; }
-.provider-status { display: flex; align-items: center; gap: 14px; flex-shrink: 0; }
-.method-section, .config-section { padding: 22px 24px; }
-.config-section { border-top: 1px solid #edf1f6; }
+.provider-card { overflow: hidden; border: 1px solid #eef0f4; border-radius: 14px; background: #fff; box-shadow: 0 1px 2px rgba(16,24,40,.025); }
+.provider-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 20px 22px 18px; background: #fff; border-bottom: 1px solid #f0f2f5; }
+.provider-kicker { display: block; margin-bottom: 6px; color: #98a2b3; font-size: 9px; font-weight: 700; letter-spacing: .13em; }
+.provider-header h3, .project-heading h3 { margin: 0 0 6px; color: #17191d; font-size: 18px; font-weight: 700; letter-spacing: -.2px; }
+.provider-header p, .project-heading p, .method-heading p { margin: 0; color: #667085; font-size: 12px; line-height: 1.65; }
+.provider-status { display: flex; align-items: center; gap: 9px; flex-shrink: 0; }
+.provider-switch-label { color: #667085; font-size: 11px; }
+.method-section, .config-section { padding: 20px 22px; }
+.config-section { border-top: 1px solid #f0f2f5; background: #fcfcfd; }
 .method-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
-.method-heading h4 { margin: 0 0 5px; font-size: 15px; color: #2e3b4f; }
-.method-heading > span { color: #8693a5; font-size: 12px; white-space: nowrap; }
+.method-heading h4 { margin: 0 0 5px; color: #344054; font-size: 14px; font-weight: 650; }
+.method-heading > span { color: #98a2b3; font-size: 11px; white-space: nowrap; }
 .method-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; width: 100%; }
-.method-grid :deep(.el-checkbox) { height: auto; min-height: 64px; margin: 0; padding: 12px 14px; align-items: flex-start; border-radius: 10px; background: #fbfcfe; }
+.method-grid :deep(.el-checkbox) { height: auto; min-height: 62px; margin: 0; padding: 12px 14px; align-items: flex-start; border-radius: 9px; background: #fbfcfd; }
 .method-grid :deep(.el-checkbox__label) { display: block; white-space: normal; line-height: 1.45; }
 .method-grid :deep(.el-checkbox__label span) { display: block; color: #334155; font-weight: 600; }
 .method-grid :deep(.el-checkbox__label small) { display: block; margin-top: 3px; color: #8995a7; font-size: 11px; }
-.method-grid :deep(.el-checkbox.is-bordered.is-checked) { background: #eef4ff; border-color: #91aef0; }
-.config-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 18px; }
+.method-grid :deep(.el-checkbox.is-bordered.is-checked) { background: #f2f4f7; border-color: #98a2b3; }
+.config-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px 22px; }
 .config-field { min-width: 0; }
 .field-control { display: flex; align-items: center; gap: 8px; width: 100%; }
 .field-control .el-input { min-width: 0; flex: 1; }
 .field-help { display: block; margin-top: 5px; color: #8491a3; font-size: 12px; line-height: 1.55; }
-.provider-actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 17px 24px; border-top: 1px solid #e9eff7; background: #fbfcfe; }
-.provider-actions span { color: #7b8799; font-size: 12px; }
-.project-section { overflow: hidden; border: 1px solid #dfe7f1; border-radius: 16px; background: #fff; }
-.project-heading { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 22px 24px 16px; }
+.provider-actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 15px 22px; border-top: 1px solid #f0f2f5; background: #fff; }
+.provider-actions span { color: #98a2b3; font-size: 11px; }
+.project-section { overflow: hidden; border: 1px solid #eef0f4; border-radius: 14px; background: #fff; box-shadow: 0 1px 2px rgba(16,24,40,.025); }
+.project-heading { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 20px 22px 16px; border-bottom: 1px solid #f0f2f5; }
 .project-search { width: min(280px, 100%); }
 .method-tags { display: flex; flex-wrap: wrap; gap: 5px; }
 @media (max-width: 760px) {
   .payment-overview, .provider-header, .provider-actions, .project-heading { flex-direction: column; align-items: stretch; }
+  .payment-overview { min-height: 0; padding: 22px; }
+  .payment-overview-meta { justify-items: start; }
   .payment-summary, .config-grid { grid-template-columns: 1fr; }
-  .provider-status { justify-content: space-between; }
+  .provider-status { justify-content: flex-start; flex-wrap: wrap; }
   .provider-actions .el-button { width: 100%; }
   .project-search { width: 100%; }
 }

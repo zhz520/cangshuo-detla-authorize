@@ -1,5 +1,5 @@
 import { createApp, h } from 'vue'
-import { ElMessage, ElAlert, ElButton, ElCard, ElCheckbox, ElCheckboxGroup, ElDatePicker, ElDialog, ElForm, ElFormItem, ElInput, ElInputNumber, ElLoading, ElOption, ElPagination, ElSelect, ElSwitch, ElTable, ElTableColumn, ElTag, ElUpload, ElConfigProvider } from 'element-plus'
+import { ElMessage, ElAlert, ElButton, ElCard, ElCheckbox, ElCheckboxGroup, ElDatePicker, ElDialog, ElDrawer, ElForm, ElFormItem, ElInput, ElInputNumber, ElLoading, ElOption, ElPagination, ElSelect, ElSwitch, ElTable, ElTableColumn, ElTabs, ElTabPane, ElTag, ElUpload, ElConfigProvider } from 'element-plus'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import 'element-plus/es/components/alert/style/css.mjs'
 import 'element-plus/es/components/button/style/css.mjs'
@@ -8,6 +8,7 @@ import 'element-plus/es/components/checkbox/style/css.mjs'
 import 'element-plus/es/components/checkbox-group/style/css.mjs'
 import 'element-plus/es/components/date-picker/style/css.mjs'
 import 'element-plus/es/components/dialog/style/css.mjs'
+import 'element-plus/es/components/drawer/style/css.mjs'
 import 'element-plus/es/components/form/style/css.mjs'
 import 'element-plus/es/components/form-item/style/css.mjs'
 import 'element-plus/es/components/input/style/css.mjs'
@@ -21,6 +22,8 @@ import 'element-plus/es/components/select/style/css.mjs'
 import 'element-plus/es/components/switch/style/css.mjs'
 import 'element-plus/es/components/table/style/css.mjs'
 import 'element-plus/es/components/table-column/style/css.mjs'
+import 'element-plus/es/components/tabs/style/css.mjs'
+import 'element-plus/es/components/tab-pane/style/css.mjs'
 import 'element-plus/es/components/tag/style/css.mjs'
 import 'element-plus/es/components/upload/style/css.mjs'
 import App from './App.vue'
@@ -43,5 +46,5 @@ for (const type of Object.keys(messageDurations)) {
   }
 }
 const app = createApp({ render: () => h(ElConfigProvider, { locale: zhCn }, () => h(App)) })
-for (const component of [ElAlert, ElButton, ElCard, ElCheckbox, ElCheckboxGroup, ElDatePicker, ElDialog, ElForm, ElFormItem, ElInput, ElInputNumber, ElOption, ElPagination, ElSelect, ElSwitch, ElTable, ElTableColumn, ElTag, ElUpload]) app.component(component.name, component)
+for (const component of [ElAlert, ElButton, ElCard, ElCheckbox, ElCheckboxGroup, ElDatePicker, ElDialog, ElDrawer, ElForm, ElFormItem, ElInput, ElInputNumber, ElOption, ElPagination, ElSelect, ElSwitch, ElTable, ElTableColumn, ElTabs, ElTabPane, ElTag, ElUpload]) app.component(component.name, component)
 app.use(ElLoading).mount('#app')

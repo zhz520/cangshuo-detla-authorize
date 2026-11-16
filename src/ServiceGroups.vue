@@ -1,17 +1,9 @@
 <template>
-  <section class="service-groups-page">
-    <el-card shadow="never" class="panel">
-      <template #header>
-        <div class="section-title">
-          <span>共享服务组</span>
-          <div>
-            <el-button @click="downloadRegistry">下载运行时租户导出</el-button>
-            <el-button type="primary" @click="openGroup()">新建服务组</el-button>
-          </div>
-        </div>
-      </template>
-      <p class="muted">服务组成员必须属于同一软件，并配置唯一的运行时租户编号。发布计划只绑定已发布正式版和当前有效的维护窗口。</p>
-      <el-table :data="groups" stripe empty-text="尚未登记共享服务组">
+  <section class="service-groups-page workspace-page">
+    <div class="insight-grid"><article v-for="metric in metrics" :key="metric.label" class="insight-card"><span>{{ metric.label }}</span><strong>{{ metric.value }}</strong><small>{{ metric.detail }}</small></article></div>
+    <section class="workspace-panel">
+      <header class="workspace-panel-head"><div class="workspace-panel-title"><h2>共享服务组</h2><p>服务组成员属于同一软件，并配置唯一的运行时租户编号。</p></div><div class="workspace-panel-actions"><el-button @click="downloadRegistry">下载租户导出</el-button><el-button type="primary" @click="openGroup()">新建服务组</el-button></div></header>
+      <div class="workspace-table-body"><el-table :data="groups" stripe empty-text="尚未登记共享服务组">
         <el-table-column prop="id" label="服务组编号" min-width="180" />
         <el-table-column prop="name" label="名称" min-width="180" />
         <el-table-column label="软件" min-width="130">
@@ -33,12 +25,12 @@
             <el-button link type="success" :disabled="!row.active" @click="openPlan(row)">创建发布计划</el-button>
           </template>
         </el-table-column>
-      </el-table>
-    </el-card>
+      </el-table></div>
+    </section>
 
-    <el-card shadow="never" class="panel">
-      <template #header><div class="section-title">最近发布计划</div></template>
-      <el-table :data="recentPlans" stripe empty-text="尚未签发共享发布计划">
+    <section class="workspace-panel">
+      <header class="workspace-panel-head"><div class="workspace-panel-title"><h2>最近发布计划</h2><p>签名计划的有效期、维护窗口与执行状态。</p></div><span class="panel-count">{{ recentPlans.length }}<small>条计划</small></span></header>
+      <div class="workspace-table-body"><el-table :data="recentPlans" stripe empty-text="尚未签发共享发布计划">
         <el-table-column prop="targetVersion" label="目标版本" width="120" />
         <el-table-column prop="fromVersion" label="起始版本" width="120" />
         <el-table-column prop="groupId" label="服务组" min-width="180" />
@@ -46,8 +38,8 @@
         <el-table-column label="维护窗口" min-width="260"><template #default="{row}">{{ time(row.maintenanceWindow.startAt) }} 至 {{ time(row.maintenanceWindow.endAt) }}</template></el-table-column>
         <el-table-column prop="status" label="状态" width="100" />
         <el-table-column prop="createdAt" label="创建时间" min-width="180"><template #default="{row}">{{ time(row.createdAt) }}</template></el-table-column>
-      </el-table>
-    </el-card>
+      </el-table></div>
+    </section>
 
     <el-dialog v-model="groupDialog" :title="editingGroup ? '编辑共享服务组' : '新建共享服务组'" width="min(680px,94vw)" destroy-on-close>
       <el-form label-position="top" @submit.prevent="saveGroup">
@@ -88,6 +80,11 @@ import { ElMessage } from 'element-plus'
 const props = defineProps({ data: { type: Object, required: true }, api: { type: Function, required: true }, refresh: { type: Function, required: true } })
 const groups = computed(() => props.data.serviceGroups || [])
 const recentPlans = computed(() => (props.data.sharedReleasePlans || []).slice(0, 20))
+const metrics = computed(() => [
+  { label: '服务组', value: groups.value.length, detail: '已登记共享服务组' },
+  { label: '可发布', value: groups.value.filter(item => item.active).length, detail: '成员与版本条件已满足' },
+  { label: '最近计划', value: recentPlans.value.length, detail: '按签发时间倒序展示' }
+])
 const eligibleInstances = computed(() => (props.data.instances || []).filter(item => item.runtime_tenant_id))
 const groupDialog = ref(false), editingGroup = ref(false), savingGroup = ref(false)
 const groupForm = reactive({ id: '', name: '', productId: '', instanceIds: [], status: 'ACTIVE', maintenanceMaxMinutes: 240 })

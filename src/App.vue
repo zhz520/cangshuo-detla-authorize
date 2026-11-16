@@ -1,22 +1,24 @@
 <template>
   <div v-if="!ready" class="boot" role="status"><template v-if="bootError"><p role="alert">{{ bootError }}</p><el-button type="primary" @click="connect">重新连接</el-button></template><template v-else>正在连接运营中心…</template></div>
   <main v-else-if="!loggedIn" class="login-page">
-    <section class="login-card"><div class="brand-mark">C</div><p class="eyebrow">CANGSHUO · CONTROL CENTER</p><h1>授权运营中心</h1><p class="muted">管理客户、模块、授权与版本发布</p>
-      <el-form label-position="top" @submit.prevent="login"><el-form-item label="运营账号"><el-input v-model="credentials.username" autocomplete="username" /></el-form-item><el-form-item label="密码"><el-input v-model="credentials.password" type="password" autocomplete="current-password" show-password /></el-form-item><el-button native-type="submit" type="primary" :loading="loginBusy" class="login-submit">登录运营后台</el-button></el-form>
+    <div class="login-arches" aria-hidden="true"><span class="arch-a"></span><span class="arch-b"></span></div>
+    <section class="login-visual"><div class="login-brand"><div class="brand-mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5"/><path d="m3 16 9 5 9-5"/></svg></div><span><strong>沧烁授权中心</strong><small>运营控制面</small></span></div><div class="login-statement"><h2>一站式授权与运营管理平台</h2><p>客户管理 · 授权签发 · 功能配置 · 运营统计</p></div><footer><i></i>独立部署 · 安全访问</footer></section>
+    <section class="login-card"><div class="login-card-head"><h1>欢迎登录</h1><p>沧烁授权中心</p></div>
+      <el-form label-position="top" @submit.prevent="login"><el-form-item><el-input v-model="credentials.username" aria-label="运营账号" placeholder="请输入账号" autocomplete="username"><template #prefix><svg class="field-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.2"/><path d="M5.5 20c.6-3.4 2.8-5.2 6.5-5.2s5.9 1.8 6.5 5.2"/></svg></template></el-input></el-form-item><el-form-item><el-input v-model="credentials.password" aria-label="密码" placeholder="请输入密码" type="password" autocomplete="current-password" show-password><template #prefix><svg class="field-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></template></el-input></el-form-item><div class="login-options"><el-checkbox v-model="rememberLogin">记住登录账号</el-checkbox><button type="button" class="login-help" @click="forgotPassword">忘记密码？</button></div><el-button aria-label="登录运营后台" native-type="submit" type="primary" :loading="loginBusy" class="login-submit">登录 <span aria-hidden="true">→</span></el-button></el-form>
     </section>
   </main>
   <div v-else class="shell" :class="{ 'is-collapsed': sidebarCollapsed }">
-    <button v-if="menuOpen" class="nav-backdrop" aria-label="关闭菜单" @click="menuOpen=false"/><aside :class="{'is-open':menuOpen}"><div class="brand"><div class="brand-mark">C</div><div class="brand-copy"><strong>沧烁授权中心</strong><small>系统运营工作台</small></div></div><nav class="nav-scroll" aria-label="运营菜单"><section v-for="group in navigationGroups" :key="group.name" class="nav-section" :class="{ 'has-current': group.items.some(item=>item.id===page) }"><button type="button" class="nav-group-toggle" :class="{ active: group.items.some(item=>item.id===page) }" :aria-label="group.name" :aria-expanded="expandedNavGroup===group.name" @click="toggleNavGroup(group.name)"><span>{{ group.name }}</span><span class="nav-group-meta"><em>{{ group.items.length }}</em><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 10 4 4 4-4"/></svg></span></button><div v-show="expandedNavGroup===group.name" class="nav-group-items"><button v-for="item in group.items" :key="item.id" :class="{selected:page===item.id}" :aria-current="page===item.id?'page':undefined" :title="item.name" @click="page=item.id;menuOpen=false"><component :is="item.icon"/><span>{{ item.name }}</span></button></div></section></nav><div class="aside-bottom">独立运营后台<br/>客户业务系统单独维护</div></aside>
+    <button v-if="menuOpen" class="nav-backdrop" aria-label="关闭菜单" @click="menuOpen=false"/><aside :class="{'is-open':menuOpen}"><div class="brand"><div class="brand-mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5"/><path d="m3 16 9 5 9-5"/></svg></div><div class="brand-copy"><strong>沧烁授权中心</strong><small>系统运营工作台</small></div></div><nav class="nav-scroll" aria-label="运营菜单"><section v-for="group in navigationGroups" :key="group.name" class="nav-section" :class="{ 'has-current': group.items.some(item=>item.id===page) }"><div class="nav-label">{{ group.name }}</div><button v-for="item in group.items" :key="item.id" :class="{selected:page===item.id}" :aria-current="page===item.id?'page':undefined" :title="item.name" @click="page=item.id;menuOpen=false"><component :is="item.icon"/><span>{{ item.name }}</span></button></section></nav><div class="aside-quick"><button type="button" :class="{selected:page==='support'}" :aria-current="page==='support'?'page':undefined" title="在线客服" @click="page='support';menuOpen=false"><component :is="supportItem.icon"/><span>在线客服</span></button></div><div class="aside-controls"><button type="button" class="sidebar-collapse" :aria-label="sidebarCollapsed?'展开侧栏':'收起侧栏'" :aria-expanded="!sidebarCollapsed" @click="sidebarCollapsed=!sidebarCollapsed"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m11 17-5-5 5-5"/><path d="m18 17-5-5 5-5"/></svg><span>{{ sidebarCollapsed?'展开菜单':'收起菜单' }}</span></button></div></aside>
     <div class="workspace"><header>
       <div class="header-title">
         <button class="menu-toggle" aria-label="打开菜单" :aria-expanded="menuOpen" @click="menuOpen=!menuOpen">☰</button>
-        <button class="collapse-toggle" aria-label="折叠侧栏" :aria-expanded="!sidebarCollapsed" @click="sidebarCollapsed=!sidebarCollapsed">☰</button>
-        <span class="breadcrumb">平台运营 / 授权中心 / </span><strong>{{ title }}</strong>
+        <span class="breadcrumb">{{ breadcrumbGroup }} /</span><strong>{{ title }}</strong>
       </div>
       <div class="header-actions" @pointerdown.stop>
         <div class="global-search" :class="{ active: searchOpen }" @click="activateGlobalSearch">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
-          <input ref="globalSearchInput" v-model="globalQuery" aria-label="全局搜索" placeholder="搜索客户、项目、授权号…" autocomplete="off" @focus="openHeaderPanel('search')" @keydown.enter="selectFirstSearchResult" @keydown.esc="closeHeaderPanels">
+          <input ref="globalSearchInput" v-model="globalQuery" aria-label="全局搜索" placeholder="搜索客户、实例、订单…" autocomplete="off" @focus="openHeaderPanel('search')" @keydown.enter="selectFirstSearchResult" @keydown.esc="closeHeaderPanels">
+          <span class="search-shortcut">Ctrl K</span>
           <div v-if="searchOpen && globalQuery.trim()" class="header-panel search-results-panel">
             <button v-for="result in searchResults" :key="result.key" type="button" class="search-result" @click.stop="selectSearchResult(result)">
               <span><strong>{{ result.title }}</strong><small>{{ result.meta }}</small></span>
@@ -50,19 +52,10 @@
         </div>
       </div>
     </header>
-      <section class="content" :aria-busy="busy">
-        <div class="page-heading"><div><p class="eyebrow">{{ page==='overview'?'CONTROL CENTER':'PLATFORM MANAGEMENT' }}</p><h1 ref="heading" tabindex="-1">{{ title }}</h1><p class="muted">{{ descriptions[page] }}</p></div><div class="actions"><el-button :loading="busy" @click="refresh">{{ busy?'加载中':'刷新' }}</el-button><el-button v-if="createActions[page]" type="primary" @click="open(createActions[page])">{{ createLabels[page] }}</el-button><el-button v-if="page==='licenses'" type="primary" @click="showPublicKey">查看验证公钥</el-button></div></div>
+      <section class="content" :class="{ 'overview-content': page==='overview' }" :aria-busy="busy">
+        <div class="page-heading"><div><h1 ref="heading" tabindex="-1">{{ title }}</h1><p class="muted">{{ descriptions[page] }}</p></div><div class="actions"><el-button :loading="busy" @click="refresh">{{ busy?'加载中':'刷新' }}</el-button><el-button v-if="createActions[page]" type="primary" @click="open(createActions[page])">{{ createLabels[page] }}</el-button><el-button v-if="page==='licenses'" type="primary" @click="showPublicKey">查看验证公钥</el-button></div></div>
         <el-alert v-if="dataError" class="data-error" :title="(loaded?'刷新失败，当前显示上次加载的数据：':'数据加载失败：')+dataError" type="error" :closable="false" show-icon/><div v-if="busy&&!loaded" class="page-loading" role="status">正在加载运营数据…</div>
         <template v-if="loaded&&page==='overview'">
-          <section class="overview-hero">
-            <div class="hero-copy">
-              <span class="hero-line"></span>
-              <p class="hero-eyebrow">CONTROL CENTER</p>
-              <h2>沧烁授权中心</h2>
-              <p>统一管理客户授权、开通流程与交付状态。</p>
-            </div>
-            <div class="hero-visual" aria-hidden="true"><span class="hero-shape shape-a"></span><span class="hero-shape shape-b"></span><span class="hero-shape shape-c"></span></div>
-          </section>
           <div class="stats">
             <article v-for="item in stats" :key="item.name" class="stat-card" @click="go(item.target)">
               <div class="stat-head"><span class="stat-icon"><component :is="item.icon" /></span><span class="stat-name">{{ item.name }}</span><span class="stat-arrow">›</span></div>
@@ -80,23 +73,61 @@
             </div>
             <p class="process-note">在线支付由微信回调验签后确认，人工订单由运营人员核对收款。客户系统只使用验证公钥，签发私钥保留在本运营中心。</p>
           </el-card>
-          <el-card shadow="never" class="overview-card recent-card">
-            <template #header><div class="section-title"><span>最近操作</span><el-button text @click="page='audit'">查看更多 <span class="button-arrow">›</span></el-button></div></template>
-            <el-table :data="data.audit.slice(0,6)" class="recent-table">
-              <el-table-column label="时间" min-width="180"><template #default="{row}">{{ time(row.created_at) }}</template></el-table-column>
-              <el-table-column prop="actor" label="运营账号" min-width="120"/>
-              <el-table-column label="操作" min-width="180"><template #default="{row}">{{ actionLabels[row.action] || row.action }}</template></el-table-column>
-              <el-table-column prop="target" label="关联编号" min-width="240" show-overflow-tooltip/>
-              <el-table-column label="状态" width="110"><template #default><el-tag size="small" type="success">已完成</el-tag></template></el-table-column>
-            </el-table>
-            <el-empty v-if="!data.audit.length" description="暂无操作记录" />
-          </el-card>
+          <div class="overview-analysis-grid">
+            <el-card shadow="never" class="overview-card analysis-card trend-card">
+              <template #header><div class="section-title"><span>授权签发趋势</span><div class="trend-range"><button v-for="range in [7,30,90]" :key="range" type="button" :class="{active:trendRange===range}" @click="trendRange=range">{{ range }}天</button></div></div></template>
+              <div class="trend-summary"><strong>{{ trendTotal }}</strong><span>近 {{ trendRange }} 天签发</span></div>
+              <svg class="trend-chart" viewBox="0 0 600 220" role="img" aria-label="授权签发趋势">
+                <defs><linearGradient id="trend-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#17191d" stop-opacity=".13"/><stop offset="1" stop-color="#17191d" stop-opacity="0"/></linearGradient></defs>
+                <line v-for="grid in trendGrid" :key="grid.y" x1="38" :y1="grid.y" x2="586" :y2="grid.y" class="trend-grid-line"/>
+                <path :d="trendAreaPath" fill="url(#trend-fill)"/>
+                <path :d="trendLinePath" fill="none" class="trend-line"/>
+                <circle v-for="(point,index) in trendPoints" :key="index" :cx="point.x" :cy="point.y" r="3.2" class="trend-dot"/>
+                <text v-for="grid in trendGrid" :key="'label-'+grid.y" x="28" :y="grid.y+4" text-anchor="end" class="trend-axis">{{ grid.value }}</text>
+                <text v-for="(point,index) in trendPoints" :key="'x-'+index" :x="point.x" y="210" text-anchor="middle" class="trend-axis">{{ point.label }}</text>
+              </svg>
+            </el-card>
+            <el-card shadow="never" class="overview-card analysis-card status-card">
+              <template #header><div class="section-title"><span>授权状态分布</span></div></template>
+              <div class="status-layout"><div class="donut-chart" :style="donutStyle"><div class="donut-center"><strong>{{ data.entitlements.length }}</strong><span>总授权</span></div></div><div class="status-legend"><div v-for="item in entitlementDistribution" :key="item.label"><i :style="{background:item.color}"></i><span>{{ item.label }}</span><strong>{{ item.percent }}%</strong></div></div></div>
+            </el-card>
+            <el-card shadow="never" class="overview-card analysis-card recent-card">
+              <template #header><div class="section-title"><span>最近操作</span><el-button text @click="page='audit'">查看更多 <span class="button-arrow">›</span></el-button></div></template>
+              <div class="activity-list"><div v-for="row in data.audit.slice(0,4)" :key="row.id" class="activity-row"><span class="activity-icon"><Document /></span><div><strong>{{ actionLabels[row.action] || row.action }}</strong><small>{{ row.actor }} · {{ time(row.created_at) }}</small></div><el-tag size="small" type="info">成功</el-tag></div><el-empty v-if="!data.audit.length" description="暂无操作记录" /></div>
+            </el-card>
+          </div>
         </template>
                 <SupportAdmin v-if="loaded&&page==='support'" :api="api" :customers="data.customers"/>
         <UsageAccounts v-if="loaded&&page==='usage'" :api="api"/>
         <KeepAlive><Operations v-if="loaded&&operationsPages.includes(page)" :page="page" :data="data" :api="api" :refresh="refreshAfterWrite" @publish="publish"/></KeepAlive>
         <KeepAlive><ServiceGroups v-if="loaded&&page==='serviceGroups'" :data="data" :api="api" :refresh="refreshAfterWrite"/></KeepAlive>
-        <el-card v-if="loaded&&page!=='overview'&&page!=='support'&&page!=='usage'&&page!=='serviceGroups'&&!operationsPages.includes(page)" shadow="never"><div class="table-toolbar"><strong>{{ title }}列表</strong><el-input v-model="search" placeholder="搜索编号、名称或状态" clearable aria-label="搜索当前列表" class="search"/></div>
+        <section v-if="loaded&&page!=='overview'&&page!=='support'&&page!=='usage'&&page!=='serviceGroups'&&!operationsPages.includes(page)" class="workspace-page">
+          <div class="insight-grid">
+            <article v-for="metric in genericPageMetrics" :key="metric.label" class="insight-card">
+              <span>{{ metric.label }}</span><strong>{{ metric.value }}</strong><small>{{ metric.detail }}</small>
+            </article>
+          </div>
+          <section class="workspace-panel">
+            <header class="workspace-panel-head">
+              <div class="workspace-panel-title"><h2>数据列表</h2><p>{{ descriptions[page] }}</p></div>
+              <div class="workspace-panel-actions"><el-input v-model="search" placeholder="搜索编号、名称或状态" clearable aria-label="搜索当前列表" class="workspace-search"/><span class="panel-count">{{ records.length }}<small>条记录</small></span></div>
+            </header>
+            <div class="workspace-table-body generic-table-body">
+          <div class="mobile-data-list">
+            <article v-for="row in records" :key="row.id || row.created_at" class="mobile-data-card">
+              <header><div><strong>{{ mobileCardTitle(row) }}</strong><small>{{ mobileCardSubtitle(row) }}</small></div><el-tag v-if="mobileCardStatus(row)" :type="mobileCardStatus(row).type" size="small">{{ mobileCardStatus(row).label }}</el-tag></header>
+              <dl><div v-for="field in mobileCardFields(row)" :key="field.label"><dt>{{ field.label }}</dt><dd>{{ field.value }}</dd></div></dl>
+              <footer>
+                <template v-if="page==='customers'"><el-button size="small" @click="open('customer',row)">编辑</el-button><el-button size="small" type="danger" plain @click="removeCustomer(row)">删除</el-button></template>
+                <template v-else-if="page==='instances'"><el-button size="small" @click="open('instance',row)">编辑</el-button><el-button size="small" @click="exportIdentity(row)">接入凭据</el-button></template>
+                <template v-else-if="page==='modules'"><el-button size="small" @click="open('module',row)">编辑</el-button><el-button size="small" type="danger" plain @click="removeModule(row)">删除</el-button></template>
+                <template v-else-if="page==='entitlements'"><el-button size="small" @click="open('entitlement',row)">编辑</el-button><el-button size="small" type="success" plain @click="startEntitlementRenewal(row)">续费</el-button><el-button size="small" type="danger" plain @click="removeEntitlement(row)">删除</el-button></template>
+                <template v-else-if="page==='orders'"><el-button v-if="row.status==='UNPAID'" size="small" type="primary" @click="open('payment',row)">确认收款</el-button><el-button v-if="row.status==='UNPAID'" size="small" @click="maintenanceGrant(row)">维护期接入</el-button><el-button v-if="!row.granted_at&&['UNPAID','PAID','MAINTENANCE'].includes(row.status)" size="small" type="danger" plain @click="cancelOrder(row)">{{ row.status==='PAID'?'退款作废':'作废' }}</el-button><el-button v-if="row.status==='PAID'||row.status==='MAINTENANCE'" size="small" type="primary" @click="issue(row)">{{ row.granted_at?'查看授权':'签发授权' }}</el-button></template>
+                <template v-else-if="page==='licenses'"><el-button size="small" type="primary" @click="viewLicense(row)">查看交付内容</el-button></template>
+              </footer>
+            </article>
+            <el-empty v-if="!records.length" description="暂无数据" />
+          </div>
           <el-table v-if="page==='customers'" :data="records" stripe><el-table-column prop="id" label="客户编号" min-width="130"/><el-table-column prop="name" label="客户名称" min-width="180"/><el-table-column label="状态"><template #default="{row}"><el-tag :type="row.status==='ACTIVE'?'success':'info'">{{ status(row.status) }}</el-tag></template></el-table-column><el-table-column prop="note" label="备注" min-width="200" show-overflow-tooltip/><el-table-column label="登记时间" min-width="180"><template #default="{row}">{{ time(row.created_at) }}</template></el-table-column><el-table-column label="操作" min-width="130"><template #default="{row}"><el-button link type="primary" @click="open('customer',row)">编辑</el-button><el-button link type="danger" @click="removeCustomer(row)">删除</el-button></template></el-table-column></el-table>
           <el-table v-if="page==='instances'" :data="records" stripe><el-table-column prop="name" label="实例名称" min-width="140"/><el-table-column prop="customer_name" label="所属客户" min-width="140"/><el-table-column prop="id" label="实例编号" min-width="300"/><el-table-column label="运行时租户" min-width="130"><template #default="{row}"><code v-if="row.runtime_tenant_id">{{ row.runtime_tenant_id }}</code><span v-else class="muted">未登记</span></template></el-table-column><el-table-column label="域名授权" min-width="220"><template #default="{row}">{{ (row.domains||[]).join('、') }}</template></el-table-column><el-table-column label="维护期至" min-width="180"><template #default="{row}">{{ time(row.maintenance_until) }}</template></el-table-column><el-table-column label="客户端版本" min-width="210"><template #default="{row}"><span>{{ row.client_version || '待客户端上报' }}</span> <el-tag v-if="row.update_available" type="warning" size="small">可更新 {{ row.latest_version }}</el-tag> <el-tag v-else-if="row.client_version" type="success" size="small">最新</el-tag><br/><small class="muted">自动上报：{{ row.last_seen_at ? time(row.last_seen_at) : '—' }}</small></template></el-table-column><el-table-column label="操作"><template #default="{row}"><el-button link type="primary" @click="open('instance',row)">编辑</el-button><el-button link @click="exportIdentity(row)">接入凭据</el-button></template></el-table-column></el-table>
           <el-table v-if="page==='modules'" :data="records" stripe><el-table-column prop="name" label="模块名称" min-width="150"/><el-table-column prop="id" label="模块编号" min-width="210"/><el-table-column label="所属平台" min-width="130"><template #default="{row}">{{ productName(row.product_id) }}</template></el-table-column><el-table-column prop="description" label="功能说明" min-width="240" show-overflow-tooltip/><el-table-column prop="min_version" label="最低版本" min-width="100"/><el-table-column label="价格"><template #default="{row}">{{ row.price_cents==null?'尚未定价':money(row.price_cents) }}</template></el-table-column><el-table-column label="状态"><template #default="{row}"><el-tag :type="row.status==='ACTIVE'?'success':'info'">{{ status(row.status) }}</el-tag></template></el-table-column><el-table-column label="操作" min-width="150"><template #default="{row}"><el-button link type="primary" @click="open('module',row)">编辑</el-button><el-button link type="danger" @click="removeModule(row)">删除</el-button></template></el-table-column></el-table>
@@ -105,8 +136,10 @@
           <el-table v-if="page==='licenses'" :data="records" stripe><el-table-column prop="id" label="授权编号" min-width="290"/><el-table-column prop="customer_id" label="客户编号" min-width="120"/><el-table-column prop="instance_id" label="绑定实例" min-width="300"/><el-table-column label="域名授权" min-width="200"><template #default="{row}">{{ (row.domains||[]).join('、') }}</template></el-table-column><el-table-column label="签发时间" min-width="180"><template #default="{row}">{{ time(row.issued_at) }}</template></el-table-column><el-table-column label="维护期/授权到期" min-width="180"><template #default="{row}">{{ time(row.expires_at) }}</template></el-table-column><el-table-column label="操作"><template #default="{row}"><el-button link type="primary" @click="viewLicense(row)">查看交付内容</el-button></template></el-table-column></el-table>
           <el-table v-if="page==='releases'" :data="records" stripe><el-table-column prop="version" label="版本号" min-width="180"/><el-table-column label="通道"><template #default="{row}">{{ row.channel==='stable'?'正式版':'预览版' }}</template></el-table-column><el-table-column prop="notes" label="更新说明" min-width="220" show-overflow-tooltip/><el-table-column label="状态"><template #default="{row}"><el-tag :type="row.status==='PUBLISHED'?'success':'info'">{{ status(row.status) }}</el-tag></template></el-table-column><el-table-column label="操作" min-width="190"><template #default="{row}"><el-button v-if="row.status==='DRAFT'" link type="primary" @click="publish(row)">发布版本信息</el-button><a v-if="row.status==='PUBLISHED'" :href="publicReleaseUrl(row)" target="_blank" rel="noopener noreferrer">查看发布说明</a></template></el-table-column></el-table>
           <el-table v-if="page==='audit'" :data="records" stripe><el-table-column label="时间" min-width="180"><template #default="{row}">{{ time(row.created_at) }}</template></el-table-column><el-table-column prop="actor" label="运营账号"/><el-table-column label="操作" min-width="180"><template #default="{row}">{{ actionLabels[row.action] || row.action }}</template></el-table-column><el-table-column prop="target" label="关联编号" min-width="280"/><el-table-column prop="detail" label="操作记录" min-width="240" show-overflow-tooltip/></el-table>
-          <ListPager :total="total" :state="listState"/>
-        </el-card>
+              <ListPager :total="total" :state="listState"/>
+            </div>
+          </section>
+        </section>
       </section>
     </div>
     <el-dialog v-model="dialog" :title="dialogTitle" width="min(580px,94vw)" destroy-on-close>
@@ -137,22 +170,39 @@ const SupportAdmin=defineAsyncComponent(()=>import('./SupportAdmin.vue'))
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { HomeFilled, User, Monitor, Goods, Document, Key, UploadFilled, Clock, Connection, CreditCard } from '@element-plus/icons-vue'
 const navigationGroups=[
-  {name:'工作台',items:[{id:'overview',name:'运营概览',icon:HomeFilled},{id:'support',name:'在线客服',icon:Connection}]},
-  {name:'客户与项目',items:[{id:'customers',name:'客户管理',icon:User},{id:'projects',name:'项目管理',icon:Monitor},{id:'instances',name:'实例接入',icon:Connection},{id:'products',name:'软件中心',icon:Goods}]},
-  {name:'商品与授权',items:[{id:'modules',name:'功能与定价',icon:Goods},{id:'entitlements',name:'客户功能',icon:Key},{id:'orders',name:'购买订单',icon:Document},{id:'licenses',name:'授权管理',icon:Key}]},
-  {name:'发布与用量',items:[{id:'usage',name:'实名用量账户',icon:CreditCard},{id:'releases',name:'版本发布',icon:UploadFilled},{id:'serviceGroups',name:'服务组发布',icon:Connection}]},
-  {name:'系统设置',items:[{id:'payments',name:'支付设置',icon:CreditCard},{id:'mail',name:'邮件通知',icon:Connection},{id:'audit',name:'操作记录',icon:Clock}]}
+  {name:'工作台',items:[{id:'overview',name:'运营概览',icon:HomeFilled}]},
+  {name:'客户与业务',items:[{id:'customers',name:'客户管理',icon:User},{id:'projects',name:'项目管理',icon:Monitor},{id:'instances',name:'实例接入',icon:Connection}]},
+  {name:'产品与授权',items:[{id:'products',name:'软件中心',icon:Goods},{id:'modules',name:'功能与定价',icon:Goods},{id:'entitlements',name:'客户功能',icon:Key}]},
+  {name:'账户与结算',items:[{id:'usage',name:'实名用量账户',icon:CreditCard},{id:'orders',name:'购买订单',icon:Document},{id:'licenses',name:'授权管理',icon:Key}]},
+  {name:'发布与设置',items:[{id:'releases',name:'版本发布',icon:UploadFilled},{id:'serviceGroups',name:'服务组发布',icon:Connection},{id:'payments',name:'支付设置',icon:CreditCard},{id:'mail',name:'邮件通知',icon:Connection},{id:'audit',name:'操作记录',icon:Clock}]}
 ]
-const navigation=computed(()=>navigationGroups.flatMap(group=>group.items))
+const supportItem={id:'support',name:'在线客服',icon:Connection}
+const navigation=computed(()=>[...navigationGroups.flatMap(group=>group.items),supportItem])
 const descriptions={overview:'统一管理客户授权、开通流程与交付状态。',support:'管理授权中心在线客服会话与客户入口。',customers:'登记客户编号与名称，与客户系统独立维护。',instances:'将授权绑定到客户系统显示的实例编号。',modules:'先确认价格与期限，再开放客户在线购买。',entitlements:'按实例维护每项付费功能的授权状态、有效期和续费。',usage:'管理实名核验的按次余额、冻结金额、核验请求和资金流水。',products:'登记不同类型的软件项目与 GitHub 正式版仓库。',projects:'按项目维护到期时间、暂停策略、支付接入和通知邮箱。',payments:'统一维护授权中心收款参数，再由项目选择可用支付方式。',mail:'配置邮箱发信与查看重要通知发送记录。',orders:'查看客户在线购买、人工维护期接入和授权签发记录。',licenses:'查看与交付签名授权，签发私钥留在运营中心。',releases:'维护客户端的版本目录与发布说明。',serviceGroups:'登记多租户服务组成员，签发共享发布计划。',audit:'保留客户登记、在线收款、退款和签发记录。'}
 const actionLabels={SAVE_PRODUCT:'保存软件与仓库',UPDATE_CUSTOMER:'更新客户',DELETE_CUSTOMER:'删除客户',CREATE_PROJECT:'新增项目',UPDATE_PROJECT:'更新项目维护',CREATE_MODULE:'登记功能模块',UPDATE_MAIL_SETTINGS:'保存邮箱配置',QUEUE_TEST_MAIL:'测试发信',RETRY_MAIL:'重试邮件',UPDATE_RELEASE_ITEMS:'配置更新内容',CREATE_UPDATE_PLAN:'生成更新计划',REISSUE_MAINTENANCE_LICENSE:'同步维护授权',EXPORT_INSTANCE_IDENTITY:'导出实例接入凭据',CLIENT_VERSION_REPORT:'客户端版本上报',LOGIN:'登录后台',CREATE_CUSTOMER:'登记客户',CREATE_INSTANCE:'登记实例',UPDATE_INSTANCE:'更新授权域名/维护期',CREATE_SERVICE_GROUP:'新增共享服务组',UPDATE_SERVICE_GROUP:'更新共享服务组',CREATE_SHARED_RELEASE_PLAN:'签发共享发布计划',UPDATE_MODULE:'调整模块价格',CREATE_ORDER:'创建功能订单',CONFIRM_ONLINE_PAYMENT:'在线支付自动确认',CONFIRM_MANUAL_PAYMENT:'确认人工收款',UPLOAD_PAYMENT_KEY:'上传支付密钥',UPDATE_PLUGIN:'配置客户插件',GRANT_MAINTENANCE_ACCESS:'维护期接入',ISSUE_LICENSE:'签发授权',CREATE_ENTITLEMENT:'新增客户功能',UPDATE_ENTITLEMENT:'编辑客户功能',DELETE_ENTITLEMENT:'删除客户功能',CREATE_RELEASE_DRAFT:'登记版本草稿',PUBLISH_RELEASE_METADATA:'发布版本信息'}
 const createActions={customers:'customer',instances:'instance',entitlements:'entitlement',orders:'order',modules:'newModule',releases:'release'},createLabels={customers:'新增客户',instances:'登记实例',entitlements:'新增客户功能',orders:'创建订单',modules:'新增功能模块',releases:'新增版本'}
-const menuOpen=ref(false), sidebarCollapsed=ref(false), searchOpen=ref(false), notificationsOpen=ref(false), accountOpen=ref(false), globalQuery=ref(''), globalSearchInput=ref(null), expandedNavGroup=ref('工作台')
+const menuOpen=ref(false), sidebarCollapsed=ref(false), searchOpen=ref(false), notificationsOpen=ref(false), accountOpen=ref(false), globalQuery=ref(''), globalSearchInput=ref(null)
+const rememberedUsername=(()=>{try{return localStorage.getItem('authority:remember-username')||''}catch{return ''}})()
+const rememberLogin=ref(Boolean(rememberedUsername))
 const ready=ref(false),bootError=ref(''),loggedIn=ref(false),username=ref(''),csrf=ref(''),busy=ref(false),saving=ref(false),loginBusy=ref(false),logoutBusy=ref(false),page=ref('overview'),heading=ref(null),dataError=ref(''),loaded=ref(false)
 const operationsPages=['products','projects','payments','mail','releases']
-const credentials=reactive({username:'admin',password:''}),data=reactive({products:[],projects:[],paymentProviders:[],mailSettings:{},mailQueue:[],customers:[],instances:[],modules:[],entitlements:[],orders:[],licenses:[],releases:[],serviceGroups:[],sharedReleasePlans:[],audit:[]})
+const credentials=reactive({username:rememberedUsername||'admin',password:''}),data=reactive({products:[],projects:[],paymentProviders:[],mailSettings:{},mailQueue:[],customers:[],instances:[],modules:[],entitlements:[],orders:[],licenses:[],releases:[],serviceGroups:[],sharedReleasePlans:[],audit:[]})
 const title=computed(()=>navigation.value.find(item=>item.id===page.value)?.name)
+const breadcrumbGroup=computed(()=>page.value==='support'?'工作台':navigationGroups.find(group=>group.items.some(item=>item.id===page.value))?.name||'工作台')
 const recentAudit=computed(()=>data.audit.slice(0,4))
+const genericPageMetrics=computed(()=>{
+  const today=new Date().toLocaleDateString('zh-CN')
+  const metrics={
+    customers:[['客户总数',data.customers.length,'已登记客户主体'],['启用客户',data.customers.filter(item=>item.status==='ACTIVE').length,'当前可继续开通实例'],['关联实例',data.instances.length,'客户系统运行实例']],
+    instances:[['实例总数',data.instances.length,'已绑定授权实例'],['已上报版本',data.instances.filter(item=>item.client_version).length,'客户端成功上报'],['可更新实例',data.instances.filter(item=>item.update_available).length,'存在更高正式版本']],
+    modules:[['功能总数',data.modules.length,'全部付费功能'],['已上架',data.modules.filter(item=>item.status==='ACTIVE').length,'客户可购买'],['已定价',data.modules.filter(item=>item.price_cents!=null).length,'具备在线报价']],
+    entitlements:[['授权记录',data.entitlements.length,'实例与功能权益'],['有效授权',data.entitlements.filter(item=>item.status==='ACTIVE').length,'当前已生效'],['30天到期',data.entitlements.filter(item=>item.status==='ACTIVE'&&Number(item.remaining_days)<=30).length,'建议跟进续费']],
+    orders:[['订单总数',data.orders.length,'功能购买与续费'],['待收款',data.orders.filter(item=>item.status==='UNPAID').length,'等待客户支付或人工核对'],['已交付',data.orders.filter(item=>item.granted_at).length,'授权已签发']],
+    licenses:[['授权总数',data.licenses.length,'已签发授权记录'],['有效授权',data.licenses.filter(item=>Date.parse(item.expires_at)>Date.now()).length,'维护期内可用'],['绑定域名',new Set(data.licenses.flatMap(item=>item.domains||[])).size,'去重域名授权数']],
+    audit:[['操作总数',data.audit.length,'最近 200 条管理操作'],['今日操作',data.audit.filter(item=>new Date(item.created_at).toLocaleDateString('zh-CN')===today).length,'按客户端日期统计'],['操作账号',new Set(data.audit.map(item=>item.actor)).size,'参与操作的账号']]
+  }
+  return (metrics[page.value]||[]).map(([label,value,detail])=>({label,value,detail}))
+})
 const searchResults=computed(()=>{
   const query=globalQuery.value.trim().toLowerCase()
   if(!query)return []
@@ -174,6 +224,43 @@ const stats=computed(()=>[
   {name:'待确认收款',value:data.orders.filter(order=>order.status==='UNPAID').length,detail:'在线支付或人工核对',target:'orders',icon:Document},
   {name:'已签发授权',value:data.licenses.length,detail:'完成交付的授权记录',target:'licenses',icon:Key}
 ])
+const trendRange=ref(7)
+const trendBuckets=computed(()=>{
+  const bucketCount=trendRange.value===7?7:trendRange.value===30?10:9
+  const step=trendRange.value/bucketCount*86400000,end=Date.now(),result=[]
+  for(let offset=bucketCount-1;offset>=0;offset--){
+    const bucketEnd=end-offset*step,bucketStart=bucketEnd-step
+    result.push({
+      label:new Date(bucketEnd).toLocaleDateString('zh-CN',{month:'2-digit',day:'2-digit'}),
+      value:data.licenses.filter(row=>{const issued=Date.parse(row.issued_at);return Number.isFinite(issued)&&issued>=bucketStart&&issued<bucketEnd}).length
+    })
+  }
+  return result
+})
+const trendTotal=computed(()=>trendBuckets.value.reduce((sum,item)=>sum+item.value,0))
+const trendPoints=computed(()=>{
+  const width=600,left=42,right=14,top=18,bottom=28,max=Math.max(4,...trendBuckets.value.map(item=>item.value)),count=Math.max(1,trendBuckets.value.length-1)
+  return trendBuckets.value.map((item,index)=>({...item,x:left+(600-left-right)*(index/count),y:top+(1-item.value/max)*(220-top-bottom)}))
+})
+const trendGrid=computed(()=>{const max=Math.max(4,...trendBuckets.value.map(item=>item.value));return [0,1,2,3,4].map(index=>{const ratio=index/4;return {y:18+ratio*(220-18-28),value:Math.round(max*(1-ratio))}})})
+const trendLinePath=computed(()=>trendPoints.value.map((point,index)=>(index?'L':'M')+point.x.toFixed(1)+' '+point.y.toFixed(1)).join(' '))
+const trendAreaPath=computed(()=>trendPoints.value.length?`${trendLinePath.value} L ${trendPoints.value.at(-1).x.toFixed(1)} 192 L ${trendPoints.value[0].x.toFixed(1)} 192 Z`:'')
+const entitlementDistribution=computed(()=>{
+  const active=data.entitlements.filter(item=>item.status==='ACTIVE')
+  const counts=[
+    {label:'正常生效',value:active.filter(item=>Number(item.remaining_days)>30).length,color:'#17191d'},
+    {label:'即将到期',value:active.filter(item=>Number(item.remaining_days)<=30).length,color:'#667085'},
+    {label:'已到期',value:data.entitlements.filter(item=>['EXPIRED','PENDING'].includes(item.status)).length,color:'#b8bec7'},
+    {label:'已停用',value:data.entitlements.filter(item=>item.status==='DISABLED').length,color:'#e4e7ec'}
+  ]
+  const total=Math.max(1,counts.reduce((sum,item)=>sum+item.value,0))
+  return counts.map(item=>({...item,percent:Math.round(item.value/total*100)}))
+})
+const donutStyle=computed(()=>{
+  let cursor=0
+  const parts=entitlementDistribution.value.filter(item=>item.value>0).map(item=>{const start=cursor,end=cursor+item.value/Math.max(1,data.entitlements.length)*360;cursor=end;return `${item.color} ${start}deg ${end}deg`})
+  return {background:parts.length?`conic-gradient(${parts.join(',')})`:'#eef0f4'}
+})
 const processSteps=computed(()=>{
   const done=[data.customers.length>0&&data.instances.length>0,data.modules.some(item=>item.price_cents!=null&&item.status==='ACTIVE'),data.orders.some(item=>['PAID','MAINTENANCE'].includes(item.status)),data.licenses.length>0]
   const active=Math.max(0,done.findIndex(item=>!item))
@@ -186,7 +273,6 @@ const processSteps=computed(()=>{
 })
 const {query:search,state:listState,total,rows:records}=useRecords(()=>data[page.value]||[],()=>page.value)
 function go(target){if(target)page.value=target}
-function toggleNavGroup(name){expandedNavGroup.value=expandedNavGroup.value===name?'':name}
 function closeHeaderPanels(){searchOpen.value=false;notificationsOpen.value=false;accountOpen.value=false}
 function openHeaderPanel(panel){searchOpen.value=panel==='search';notificationsOpen.value=panel==='notifications';accountOpen.value=panel==='account'}
 function activateGlobalSearch(){openHeaderPanel('search');nextTick(()=>globalSearchInput.value?.focus())}
@@ -196,6 +282,10 @@ function selectFirstSearchResult(){if(searchResults.value[0])selectSearchResult(
 function money(cents){return '¥'+(Number(cents)/100).toFixed(2)}
 function productName(id){return data.products.find(item=>item.id===id)?.name||id||'—'}
 function time(value){return value?new Date(value).toLocaleString('zh-CN',{hour12:false}):'—'}
+function mobileCardTitle(row){return ({customers:row.name||row.id,instances:row.name||row.id,modules:row.name||row.id,entitlements:row.instance_name||row.instance_id,orders:row.module_name||row.id,licenses:row.id,audit:actionLabels[row.action]||row.action})[page.value]||row.id||'记录'}
+function mobileCardSubtitle(row){return ({customers:row.id,instances:row.customer_name||'',modules:row.id,entitlements:row.customer_name||'',orders:row.customer_name||'',licenses:row.customer_id||'',audit:row.actor||''})[page.value]||''}
+function mobileCardStatus(row){if(page.value==='customers'||page.value==='modules')return {label:status(row.status),type:row.status==='ACTIVE'?'success':'info'};if(page.value==='instances')return {label:row.client_version?'已上报':'待上报',type:row.client_version?'success':'info'};if(page.value==='entitlements')return {label:entitlementStatus(row.status),type:entitlementTag(row.status)};if(page.value==='orders')return {label:row.granted_at?'已交付':status(row.status),type:row.granted_at?'success':row.status==='UNPAID'?'warning':'info'};if(page.value==='licenses')return {label:Date.parse(row.expires_at)>Date.now()?'有效':'已到期',type:Date.parse(row.expires_at)>Date.now()?'success':'info'};return null}
+function mobileCardFields(row){if(page.value==='customers')return [{label:'登记时间',value:time(row.created_at)},{label:'备注',value:row.note||'—'}];if(page.value==='instances')return [{label:'运行时租户',value:row.runtime_tenant_id||'未登记'},{label:'维护期至',value:time(row.maintenance_until)},{label:'客户端版本',value:row.client_version||'待上报'},{label:'域名',value:(row.domains||[]).join('、')||'—'}];if(page.value==='modules')return [{label:'所属平台',value:productName(row.product_id)},{label:'价格',value:row.price_cents==null?'尚未定价':money(row.price_cents)},{label:'最低版本',value:row.min_version||'—'}];if(page.value==='entitlements')return [{label:'功能模块',value:row.module_name||'—'},{label:'剩余天数',value:row.remaining_days+' 天'},{label:'到期时间',value:time(row.valid_until)},{label:'价格周期',value:money(row.price_cents)+' / '+row.term_days+' 天'}];if(page.value==='orders')return [{label:'订单编号',value:row.id},{label:'订单金额',value:money(row.amount_cents)},{label:'授权区间',value:row.valid_from?time(row.valid_from)+' 至 '+time(row.valid_until):'缺少报价快照'}];if(page.value==='licenses')return [{label:'绑定实例',value:row.instance_id||'—'},{label:'域名授权',value:(row.domains||[]).join('、')||'—'},{label:'授权到期',value:time(row.expires_at)}];return [{label:'时间',value:time(row.created_at)},{label:'关联编号',value:row.target||'—'},{label:'操作记录',value:row.detail||'—'}]}
 function orderActualDays(row){const start=Date.parse(row?.valid_from),end=Date.parse(row?.valid_until);return Number.isFinite(start)&&Number.isFinite(end)&&end>start?Math.ceil((end-start)/86400000):null}
 function publicReleaseUrl(row){return `${window.location.origin}/public/release-notes/${encodeURIComponent(row.product_id)}/${encodeURIComponent(row.version)}`}
 function status(value){return {ACTIVE:'已启用',DISABLED:'已停用',EXPIRED:'已过期',PENDING:'未生效',DRAFT:'草稿',UNPAID:'待收款',PAID:'已收款',MAINTENANCE:'维护期接入',CANCELLED:'已作废',PUBLISHED:'已发布'}[value]||value}
@@ -211,7 +301,8 @@ function refresh(){
   return refreshTask
 }
 async function refreshAfterWrite(){if(refreshTask)await refreshTask;return refresh()}
-async function login(){if(loginBusy.value)return;loginBusy.value=true;try{const session=await api('/login',{method:'POST',body:credentials});sessionEpoch++;username.value=session.username;csrf.value=session.csrf;credentials.password='';loggedIn.value=true;await refreshAfterWrite()}catch(error){ElMessage.error(error.message)}finally{loginBusy.value=false}}
+async function login(){if(loginBusy.value)return;loginBusy.value=true;try{const session=await api('/login',{method:'POST',body:credentials});sessionEpoch++;username.value=session.username;csrf.value=session.csrf;credentials.password='';try{if(rememberLogin.value)localStorage.setItem('authority:remember-username',credentials.username.trim());else localStorage.removeItem('authority:remember-username')}catch{}loggedIn.value=true;await refreshAfterWrite()}catch(error){ElMessage.error(error.message)}finally{loginBusy.value=false}}
+function forgotPassword(){ElMessage.info('请联系平台维护人员重置运营账号密码。')}
 async function logout(){if(logoutBusy.value)return;logoutBusy.value=true;try{await api('/logout',{method:'POST',body:{}});clearSession()}catch(error){ElMessage.error(error.message)}finally{logoutBusy.value=false}}
 const dialog=ref(false),kind=ref(''),editing=ref(false),form=reactive({}),orderIntent=ref('purchase'),dialogTitle=computed(()=>kind.value==='customer'?(editing.value?'编辑客户':'新增客户'):kind.value==='order'?(orderIntent.value==='renew'?'创建续费订单':'创建购买订单'):({instance:'登记客户实例',entitlement:editing.value?'编辑客户功能':'新增客户功能',newModule:'新增功能模块',module:'编辑功能模块',payment:'确认人工收款',release:'新增版本草稿'}[kind.value]))
 const orderQuote=ref(null),previewBusy=ref(false),previewError=ref(''),previewEpoch=ref(0),orderPreviewKey=ref(0),entitlementBusy=ref('')
@@ -243,8 +334,8 @@ function downloadDelivery(){const url=URL.createObjectURL(new Blob([deliveryText
 async function publish(release){try{await ElMessageBox.confirm('请确认 GitHub Release 与说明已经核对。此操作发布版本信息，不执行客户服务器更新。','发布版本信息',{type:'info'});await api(`/releases/${encodeURIComponent(release.version)}/publish`,{method:'POST',body:{productId:release.product_id}});await refreshAfterWrite();ElMessage.success('版本信息已发布')}catch(error){if(error?.message)ElMessage.error(error.message)}}
 async function connect(){bootError.value='';try{const session=await api('/session');if(session.authenticated){loggedIn.value=true;username.value=session.username;csrf.value=session.csrf;await refresh()}ready.value=true}catch(error){bootError.value='运营服务连接失败：'+error.message}}
 function readPage(){const id=window.location.hash.slice(1);page.value=navigation.value.some(item=>item.id===id)?id:'overview'}
-function escapeMenu(event){if(event.key==='Escape'){menuOpen.value=false;closeHeaderPanels()}}
-watch(page,async value=>{window.location.hash=value;menuOpen.value=false;closeHeaderPanels();dialog.value=false;deliveryVisible.value=false;const group=navigationGroups.find(group=>group.items.some(item=>item.id===value));expandedNavGroup.value=group?.name||expandedNavGroup.value;window.scrollTo(0,0);await nextTick();heading.value?.focus({preventScroll:true})})
+function escapeMenu(event){if(event.key==='Escape'){menuOpen.value=false;closeHeaderPanels()}if(loggedIn.value&&(event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='k'){event.preventDefault();activateGlobalSearch()}}
+watch(page,async value=>{window.location.hash=value;menuOpen.value=false;closeHeaderPanels();dialog.value=false;deliveryVisible.value=false;window.scrollTo(0,0);await nextTick();document.querySelector('.nav-scroll button.selected')?.scrollIntoView({block:'nearest'});heading.value?.focus({preventScroll:true})})
 watch(menuOpen,value=>{document.body.style.overflow=value?'hidden':''})
 watch(loggedIn,value=>{if(!value){dialog.value=false;deliveryVisible.value=false}})
 onMounted(()=>{readPage();window.addEventListener('hashchange',readPage);window.addEventListener('keydown',escapeMenu);document.addEventListener('pointerdown',closeHeaderPanels);connect()})
