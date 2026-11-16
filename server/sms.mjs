@@ -259,7 +259,7 @@ export class SmsService {
     })
   }
 
-  grantPackage(projectId, packageId, actor = 'owner') {
+  grantPackage(projectId, packageId, actor = 'owner', sourceOrderId = null) {
     const pid = identifier(projectId, '项目编号')
     const product = this.db.prepare("SELECT * FROM sms_package_products WHERE id=? AND status='ACTIVE'").get(identifier(packageId, '套餐编号'))
     if (!product) fail('套餐不存在或未启用', 404)
@@ -268,11 +268,54 @@ export class SmsService {
     const start = new Date()
     const end = new Date(start.getTime() + product.validity_days * 86400000)
     return this.store.transaction(() => {
+      if (sourceOrderId) {
+        const existing = this.db.prepare('SELECT * FROM sms_package_balances WHERE source_order_id=?').get(sourceOrderId)
+        if (existing) return { id: existing.id, remainingCount: existing.remaining_count, validUntil: existing.valid_until, idempotent: true }
+      }
       const id = randomUUID()
-      this.db.prepare('INSERT INTO sms_package_balances(id,project_id,package_product_id,total_count,remaining_count,reserved_count,valid_from,valid_until,status,source_type,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
-        .run(id, pid, product.id, product.message_count, product.message_count, 0, start.toISOString(), end.toISOString(), 'ACTIVE', 'MANUAL', start.toISOString(), start.toISOString())
-      this.store.audit(actor, 'SMS_PACKAGE_GRANT', pid, { packageId: product.id, messageCount: product.message_count })
+      this.db.prepare('INSERT INTO sms_package_balances(id,project_id,package_product_id,total_count,remaining_count,reserved_count,valid_from,valid_until,status,source_type,source_order_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
+        .run(id, pid, product.id, product.message_count, product.message_count, 0, start.toISOString(), end.toISOString(), 'ACTIVE', sourceOrderId ? 'PURCHASE' : 'MANUAL', sourceOrderId, start.toISOString(), start.toISOString())
+      this.store.audit(actor, 'SMS_PACKAGE_GRANT', pid, { packageId: product.id, messageCount: product.message_count, sourceOrderId })
       return { id, remainingCount: product.message_count, validUntil: end.toISOString() }
+    })
+  }
+
+  availablePackages(instanceId) {
+    const instance = this.instanceProject(text(instanceId, '实例编号', 36))
+    return this.db.prepare("SELECT * FROM sms_package_products WHERE status='ACTIVE' AND (scope_type='GLOBAL' OR scope_id=?) ORDER BY sort,id").all(instance.project_id)
+  }
+
+  createPackageOrder(instanceId, packageId, actor = 'client') {
+    const instance = this.instanceProject(text(instanceId, '实例编号', 36))
+    const product = this.db.prepare("SELECT * FROM sms_package_products WHERE id=? AND status='ACTIVE'").get(identifier(packageId, '套餐编号'))
+    if (!product) fail('套餐不存在或未启用', 404)
+    if (product.scope_type === 'PROJECT' && product.scope_id !== instance.project_id) fail('套餐不适用于该项目', 409)
+    if (!Number.isSafeInteger(product.price_cents) || product.price_cents < 1) fail('套餐价格尚未配置', 409)
+    const existing = this.db.prepare("SELECT * FROM sms_package_orders WHERE project_id=? AND package_product_id=? AND status='UNPAID' ORDER BY created_at DESC LIMIT 1").get(instance.project_id, product.id)
+    if (existing) return { ...existing, product }
+    const id = randomUUID()
+    this.db.prepare('INSERT INTO sms_package_orders(id,project_id,package_product_id,amount_cents,status,created_at) VALUES (?,?,?,?,?,?)').run(id, instance.project_id, product.id, product.price_cents, 'UNPAID', this.now())
+    this.store.audit(actor, 'SMS_PACKAGE_ORDER', id, { projectId: instance.project_id, packageId: product.id, amountCents: product.price_cents })
+    return { ...this.db.prepare('SELECT * FROM sms_package_orders WHERE id=?').get(id), product }
+  }
+
+  packageOrder(orderId) {
+    return this.db.prepare('SELECT o.*,p.code,p.name AS package_name,p.message_count,p.validity_days,p.price_cents,c.name AS customer_name,pr.name AS project_name FROM sms_package_orders o JOIN sms_package_products p ON p.id=o.package_product_id JOIN projects pr ON pr.id=o.project_id JOIN customers c ON c.id=pr.customer_id WHERE o.id=?').get(orderId)
+  }
+
+  markPackagePaid(orderId, { transactionId, amountCents, reference } = {}) {
+    return this.store.transaction(() => {
+      const order = this.packageOrder(orderId)
+      if (!order) fail('套餐订单不存在', 404)
+      if (order.status === 'GRANTED' || (order.status === 'PAID' && order.granted_at)) return { order, idempotent: true }
+      if (order.status === 'CANCELLED') fail('套餐订单已取消', 409)
+      if (Number(amountCents) !== Number(order.amount_cents)) fail('套餐支付金额不匹配', 409)
+      const time = this.now()
+      this.db.prepare("UPDATE sms_package_orders SET status='PAID',payment_reference=?,paid_at=? WHERE id=?").run(String(reference || transactionId || '').slice(0, 128), time, orderId)
+      const grant = this.grantPackage(order.project_id, order.package_product_id, 'system', orderId)
+      this.db.prepare("UPDATE sms_package_orders SET status='GRANTED',granted_at=? WHERE id=?").run(time, orderId)
+      this.store.audit('system', 'SMS_PACKAGE_PAID', orderId, { transactionId: String(transactionId || '').slice(0, 80), amountCents })
+      return { order: this.packageOrder(orderId), grant }
     })
   }
 
@@ -470,7 +513,8 @@ export class SmsService {
     const packages = this.db.prepare('SELECT b.id,p.name,b.remaining_count-b.reserved_count AS remaining_count,b.valid_until FROM sms_package_balances b JOIN sms_package_products p ON p.id=b.package_product_id WHERE b.project_id=? AND b.status=\'ACTIVE\' AND b.valid_until>? ORDER BY b.valid_until,b.created_at').all(instance.project_id, this.now())
     const templates = this.db.prepare("SELECT template_key,name,scene,min_client_version FROM sms_templates WHERE status='ACTIVE' ORDER BY template_key").all()
     return { instanceId: instance.instance_id, projectId: instance.project_id, billingMode: account.billing_mode, unitPriceCents: account.unit_price_cents,
-      balanceCents: wallet?.balance_cents || 0, reservedCents: wallet?.reserved_cents || 0, dailyLimit: account.daily_limit, monthlyLimit: account.monthly_limit, packages, templates }
+      balanceCents: wallet?.balance_cents || 0, reservedCents: wallet?.reserved_cents || 0, dailyLimit: account.daily_limit, monthlyLimit: account.monthly_limit, packages, templates,
+      availablePackages: this.availablePackages(instanceId) }
   }
 
   requestForInstance(instanceId, requestId) {

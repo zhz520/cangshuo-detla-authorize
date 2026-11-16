@@ -10,6 +10,7 @@ import { Support } from './support.mjs'
 import { UsageBilling } from './usage.mjs'
 import { HttpIdentityProvider, IdentityVerificationService } from './identity.mjs'
 import { SmsService } from './sms.mjs'
+import { SmsPackagePaymentService } from './sms-payments.mjs'
 import { Readable,Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 
@@ -24,7 +25,9 @@ const requestBaseUrl = request => {
   return `${protocol}://${host}`
 }
 const releaseNotesPage = (productId, release) => `<main><p class="eyebrow">CANGSHUO · RELEASE NOTES</p><h1>软件正式版 ${html(release.version)}</h1><p class="meta">软件 ${html(productId)} · 发布于 ${html(release.published_at)}</p><section><h2>更新说明</h2><pre>${html(release.notes)}</pre></section><section><h2>更新内容</h2>${release.items.length ? `<ul>${release.items.map(item=>`<li><strong>${html(item.name)}</strong>${item.required?' <span class="tag">必要更新</span>':''}${item.description?`<p>${html(item.description)}</p>`:''}</li>`).join('')}</ul>` : '<p>此版本暂未登记可选更新内容。</p>'}</section><p class="foot">此页由授权运营中心提供。</p></main>`
-export function createAuthorityServer(store, { secureCookie = false, staticDirectory, allowedOrigins = [], support = new Support(store), payments = new PaymentService(store), sms = new SmsService(store) } = {}) {
+export function createAuthorityServer(store, { secureCookie = false, staticDirectory, allowedOrigins = [], support = new Support(store), payments = null, sms = new SmsService(store) } = {}) {
+  payments ||= new PaymentService(store, { sms })
+  payments.smsPackagePayments ||= new SmsPackagePaymentService(store, { sms, payments })
   const mailer = new Mailer(store)
   const usageBilling = new UsageBilling(store)
   const identityPriceCents = Number(process.env.IDENTITY_PRICE_CENTS || '100')
@@ -131,10 +134,23 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
         const instanceId = sms.verifyClient(request.headers, method, route, rawBody, body)
         if (route === '/api/sms/v1/send' && method === 'POST') return json(await sms.send(instanceId, body, request.headers['idempotency-key']))
         if (route === '/api/sms/v1/account' && method === 'GET') return json(sms.clientAccount(instanceId))
+        if (route === '/api/sms/v1/packages' && method === 'GET') return json(sms.availablePackages(instanceId))
+        let packageCheckout = route.match(/^\/api\/sms\/v1\/packages\/([a-f\d-]{36})\/checkout$/)
+        if (packageCheckout && method === 'POST') return json(await payments.smsPackagePayments.createCheckout(instanceId, packageCheckout[1], requestBaseUrl(request)), 201)
         let smsRequest = route.match(/^\/api\/sms\/v1\/requests\/([a-f\d-]{36})$/)
         if (smsRequest && method === 'GET') return json(sms.requestForInstance(instanceId, smsRequest[1]))
         fail('短信接口不存在', 404)
       }
+      let smsPackagePayMatch = route.match(/^\/pay\/sms-package\/([A-Za-z0-9_-]{43})$/)
+      if (smsPackagePayMatch && method === 'GET') {
+        response.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; script-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'")
+        response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+        return response.end(await payments.smsPackagePayments.page(smsPackagePayMatch[1]))
+      }
+      smsPackagePayMatch = route.match(/^\/api\/checkout\/sms-package\/([A-Za-z0-9_-]{43})$/)
+      if (smsPackagePayMatch && method === 'GET') return json(payments.smsPackagePayments.summary(smsPackagePayMatch[1]))
+      smsPackagePayMatch = route.match(/^\/api\/checkout\/sms-package\/([A-Za-z0-9_-]{43})\/prepay$/)
+      if (smsPackagePayMatch && method === 'POST') return json(await payments.smsPackagePayments.prepay(smsPackagePayMatch[1]), 201)
       if(route==='/api/client/artifact' && method==='POST') {
         const {result,size}=await store.releaseService.artifact(body);let bytes=0
         response.writeHead(200,{'Content-Type':'application/zip','Content-Length':String(size)})

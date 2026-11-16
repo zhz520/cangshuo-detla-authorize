@@ -84,6 +84,19 @@ test('daily limit blocks another accepted request', async () => {
   } finally { fixture.store.close() }
 })
 
+test('package order payment grants the package once', async () => {
+  const fixture = setup()
+  try {
+    const pkg = fixture.service.savePackage({ code: 'paid-pack', name: '购买套餐', messageCount: 20, priceCents: 100, validityDays: 30, scopeType: 'GLOBAL', status: 'ACTIVE' }, 'owner')
+    const order = fixture.service.createPackageOrder(fixture.instance, pkg.id)
+    const paid = fixture.service.markPackagePaid(order.id, { transactionId: 'wx-package-1', amountCents: 100 })
+    assert.equal(paid.order.status, 'GRANTED')
+    const idempotent = fixture.service.markPackagePaid(order.id, { transactionId: 'wx-package-1', amountCents: 100 })
+    assert.equal(idempotent.idempotent, true)
+    assert.equal(fixture.store.db.prepare('SELECT COUNT(*) AS count FROM sms_package_balances WHERE source_order_id=?').get(order.id).count, 1)
+  } finally { fixture.store.close() }
+})
+
 test('definitive provider failure releases the hold, uncertain result keeps it', async () => {
   const fixture = setup()
   try {

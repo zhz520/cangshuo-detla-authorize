@@ -1,4 +1,4 @@
-import { createDecipheriv, createHash, createPrivateKey, createPublicKey, randomBytes, sign, verify, X509Certificate } from 'node:crypto'
+import { createDecipheriv, createHash, createPrivateKey, createPublicKey, randomBytes, randomUUID, sign, verify, X509Certificate } from 'node:crypto'
 import { readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
 import QRCode from 'qrcode'
@@ -20,8 +20,8 @@ function staleUnpaidCheckout(order, module, instance, productId) {
 }
 
 export class PaymentService {
-  constructor(store, { fetcher = fetch, qr = QRCode } = {}) {
-    this.store = store; this.fetcher = fetcher; this.qr = qr
+  constructor(store, { fetcher = fetch, qr = QRCode, sms = null } = {}) {
+    this.store = store; this.fetcher = fetcher; this.qr = qr; this.sms = sms; this.smsPackagePayments = null
     this.platformCertificates = new Map(); this.certificateExpiresAt = 0; this.certificateLoading = null
   }
 
@@ -202,6 +202,10 @@ export class PaymentService {
     let transaction
     try { transaction = JSON.parse(plain) } catch { fail('微信支付通知内容无效', 400) }
     if (transaction.trade_state !== 'SUCCESS') return { ignored: true, state: transaction.trade_state }
+    if (this.smsPackagePayments) {
+      const smsResult = await this.smsPackagePayments.notification(transaction, config)
+      if (smsResult) return smsResult
+    }
     const payment = this.store.db.prepare('SELECT p.*,o.amount_cents AS order_amount,m.name FROM online_payments p JOIN orders o ON o.id=p.order_id JOIN modules m ON m.id=o.module_id WHERE p.out_trade_no=?').get(transaction.out_trade_no)
     if (!payment) fail('微信支付通知对应的订单不存在', 404)
     if (payment.status === 'PAID' && payment.transaction_id === transaction.transaction_id) {
