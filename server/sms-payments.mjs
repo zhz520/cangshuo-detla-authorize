@@ -77,7 +77,7 @@ export class SmsPackagePaymentService {
   async page(token) {
     let summary
     try { summary = this.summary(token) } catch (error) { return this.payments.renderMessage(error.message || '套餐支付链接无效') }
-    if (summary.status === 'GRANTED') return this.payments.renderPaid({ moduleName: summary.packageName, validUntil: summary.grantedAt })
+    if (summary.status === 'GRANTED') return '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>套餐支付成功</title><style>' + this.payments.css() + '</style></head><body><main><p class="eyebrow">CANGSHUO · SMS PACKAGE</p><h1>支付成功，套餐已发放</h1><section class="order"><div><span>套餐</span><strong>' + escapeHtml(summary.packageName) + '</strong></div><div><span>条数</span><strong>' + summary.messageCount + ' 条</strong></div></section><p class="message">请返回客户后台刷新短信服务页面。</p></main></body></html>'
     if (!summary.paymentReady) return this.payments.renderMessage('授权中心尚未完成微信 Native 支付配置，请联系维护人员')
     let codeUrl
     try { codeUrl = (await this.prepay(token))?.codeUrl } catch (error) { return this.payments.renderMessage(error.message || '微信支付暂不可用') }
