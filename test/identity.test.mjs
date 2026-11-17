@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash, generateKeyPairSync, randomUUID } from 'node:crypto'
-import { AuthorityStore } from '../server/store.mjs'
+import { AuthorityStore, HttpError } from '../server/store.mjs'
 import { UsageBilling } from '../server/usage.mjs'
 import { IdentityVerificationService, validateIdNumber } from '../server/identity.mjs'
 
@@ -62,6 +62,22 @@ test('provider failure releases the hold and a retry can use the same idempotenc
     assert.equal(retried.matched, true)
     assert.equal(billing.ensure(instance).balance_cents, 400)
     assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM service_ledger WHERE type='DEBIT'").get().count, 1)
+  } finally { store.close() }
+})
+
+test('provider-declared invalid identity releases the hold without charging or hiding the reason', async () => {
+  const { store, instance, license, billing } = setup()
+  try {
+    billing.credit(instance, 500, 'test-credit', 'owner')
+    const service = new IdentityVerificationService(store, billing,
+      { configured: () => true, verify: async () => { throw new HttpError(409, '证件库中无此身份证记录，请核对后重试') } },
+      { priceCents: 100, subjectPepper: 'test-pepper' })
+    const body = { license, version: '1.15.0', idempotencyKey: 'identity-request-invalid-0001', realName: '王五', idNumber: '11010519491231002X' }
+
+    await assert.rejects(() => service.verify(body), error => error.status === 409 && /证件库中无此身份证记录/.test(error.message))
+    assert.equal(billing.ensure(instance).reserved_cents, 0)
+    assert.equal(billing.ensure(instance).balance_cents, 500)
+    assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM service_ledger WHERE type='DEBIT'").get().count, 0)
   } finally { store.close() }
 })
 

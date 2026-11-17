@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { compareVersions, fail, text } from './store.mjs'
+import { compareVersions, fail, HttpError, text } from './store.mjs'
 
 const ID_WEIGHTS = [7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2]
 const ID_CHECK_CODES = ['1', '0', 'X', '9', '8', '7', '6', '5', '4', '3', '2']
@@ -119,6 +119,7 @@ export class IdentityVerificationService {
       providerResult = await this.provider.verify({ realName, idNumber })
     } catch (error) {
       this.billing.settle(claims.instanceId, key, 'PROVIDER_ERROR', false)
+      if (error instanceof HttpError) throw error
       console.error('identity_provider_failed', error?.name || 'Error')
       fail('实名核验服务暂时不可用，请稍后重试', 502)
     }

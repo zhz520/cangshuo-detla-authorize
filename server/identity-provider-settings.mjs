@@ -1,8 +1,15 @@
+import { createHash, createHmac } from 'node:crypto'
 import { lookup } from 'node:dns'
 import { request } from 'node:https'
 import { BlockList, isIP } from 'node:net'
 import { fail } from './store.mjs'
 import { open, seal } from './sms.mjs'
+
+const TENCENT_HOST = 'faceid.tencentcloudapi.com'
+const TENCENT_SERVICE = 'faceid'
+const TENCENT_VERSION = '2018-03-01'
+const TENCENT_REGION = /^[a-z0-9-]{2,32}$/
+const MODES = new Set(['TENCENT_FACEID', 'CUSTOM'])
 
 const blocked = new BlockList()
 for (const [address, bits] of [['0.0.0.0',8],['10.0.0.0',8],['100.64.0.0',10],['127.0.0.0',8],['169.254.0.0',16],
@@ -28,12 +35,38 @@ export function providerEndpoint(value) {
   } catch { fail('实名核验地址须为公网 HTTPS 域名，不带参数或端口') }
 }
 
+const optionalText = (value, label, maximum = 200) => {
+  if (value == null) return ''
+  if (typeof value !== 'string' || value.length > maximum || /[\r\n]/.test(value)) fail(label + '格式不正确')
+  return value.trim()
+}
+
+const sha256 = value => createHash('sha256').update(value).digest('hex')
+const hmac = (key, value, encoding) => createHmac('sha256', key).update(value).digest(encoding)
+
+function responseJson(resolve, reject, response, chunks, size) {
+  if (response.statusCode < 200 || response.statusCode >= 300 ||
+      !String(response.headers['content-type']||'').toLowerCase().startsWith('application/json')) {
+    response.destroy(); reject(new Error('identity_response_invalid')); return
+  }
+  response.on('error', reject)
+  response.on('aborted', () => reject(new Error('identity_response_aborted')))
+  response.on('data', chunk => {
+    size += chunk.length
+    if (size > 32768) response.destroy(new Error('identity_response_too_large'))
+    else chunks.push(chunk)
+  })
+  response.on('end', () => {
+    try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))) }
+    catch { reject(new Error('identity_response_invalid')) }
+  })
+}
+
 export function postIdentityJson(endpoint, token, input, timeout = 8000) {
   return new Promise((resolve,reject)=>{
     const body=Buffer.from(JSON.stringify(input))
     const req=request(new URL(providerEndpoint(endpoint)), {
-      method:'POST', agent:false,
-      signal:AbortSignal.timeout(timeout),
+      method:'POST', agent:false, signal:AbortSignal.timeout(timeout),
       headers:{ 'content-type':'application/json', 'content-length':body.length, authorization:'Bearer '+token },
       lookup:(hostname,options,cb)=>lookup(hostname,{all:true,verbatim:true},(error,records)=>{
         if(error || !records.length || records.some(({address,family})=>!publicAddress(address,family)))
@@ -41,27 +74,79 @@ export function postIdentityJson(endpoint, token, input, timeout = 8000) {
         if(options.all) cb(null,records)
         else cb(null,records[0].address,records[0].family)
       })
-    },response=>{
-      if(response.statusCode<200 || response.statusCode>=300 ||
-        !String(response.headers['content-type']||'').toLowerCase().startsWith('application/json')){
-        response.destroy(); reject(new Error('identity_response_invalid')); return
-      }
-      let size=0
-      const chunks=[]
-      response.on('error',reject)
-      response.on('aborted',()=>reject(new Error('identity_response_aborted')))
-      response.on('data',chunk=>{
-        size+=chunk.length
-        if(size>32768) response.destroy(new Error('identity_response_too_large'))
-        else chunks.push(chunk)
-      })
-      response.on('end',()=>{
-        try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))) } catch { reject(new Error('identity_response_invalid')) }
-      })
-    })
+    },response=>responseJson(resolve,reject,response,[],0))
     req.on('error',reject)
     req.end(body)
   })
+}
+
+export function tencentAuthorization({ secretId, secretKey, timestamp, payload }) {
+  const host = TENCENT_HOST
+  const contentType = 'application/json; charset=utf-8'
+  const date = new Date(timestamp * 1000).toISOString().slice(0, 10)
+  const canonicalHeaders = `content-type:${contentType}\nhost:${host}\n`
+  const signedHeaders = 'content-type;host'
+  const canonicalRequest = `POST\n/\n\n${canonicalHeaders}\n${signedHeaders}\n${sha256(payload)}`
+  const stringToSign = `TC3-HMAC-SHA256\n${timestamp}\n${date}/${TENCENT_SERVICE}/tc3_request\n${sha256(canonicalRequest)}`
+  const kDate = hmac('TC3' + secretKey, date)
+  const kService = hmac(kDate, TENCENT_SERVICE)
+  const kSigning = hmac(kService, 'tc3_request')
+  const signature = hmac(kSigning, stringToSign, 'hex')
+  return {
+    date,
+    authorization: `TC3-HMAC-SHA256 Credential=${secretId}/${date}/${TENCENT_SERVICE}/tc3_request, ` +
+      `SignedHeaders=${signedHeaders}, Signature=${signature}`
+  }
+}
+
+export function postTencentJson({ secretId, secretKey, region, realName, idNumber, timeout = 8000 }) {
+  return new Promise((resolve, reject) => {
+    const timestamp = Math.floor(Date.now() / 1000)
+    const payload = JSON.stringify({ IdCard: idNumber, Name: realName })
+    const { authorization } = tencentAuthorization({ secretId, secretKey, timestamp, payload })
+    const body = Buffer.from(payload)
+    const req = request({
+      hostname: TENCENT_HOST, port: 443, path: '/', method: 'POST', agent: false, family: 4,
+      timeout,
+      headers: {
+        'content-type': 'application/json; charset=utf-8',
+        'content-length': body.length,
+        host: TENCENT_HOST,
+        'x-tc-action': 'IdCardVerification',
+        'x-tc-timestamp': String(timestamp),
+        'x-tc-version': TENCENT_VERSION,
+        'x-tc-region': region,
+        authorization
+      }
+    }, response => responseJson(resolve, reject, response, [], 0))
+    req.on('timeout', () => req.destroy(new Error('identity_provider_timeout')))
+    req.on('error', reject)
+    req.end(body)
+  })
+}
+
+export function mapTencentResult(response) {
+  if (!response || typeof response !== 'object') throw new Error('identity_response_invalid')
+  if (response.Error) {
+    const code = String(response.Error.Code || '')
+    if (code.startsWith('AuthFailure') || code.startsWith('UnauthorizedOperation'))
+      fail('腾讯云实名密钥或权限不正确，请检查 SecretId、SecretKey 和接口权限', 503)
+    fail('实名核验服务暂时不可用，请稍后重试', 503)
+  }
+  const code = String(response.Result ?? '')
+  const reference = typeof response.RequestId === 'string' ? response.RequestId.slice(0, 128) : ''
+  if (code === '0') return { matched: true, reference }
+  if (code === '-1') return { matched: false, reference }
+  if (code === '-2') fail('身份证号格式不正确', 400)
+  if (code === '-3') fail('姓名格式不正确', 400)
+  if (code === '-5') fail('证件库中无此身份证记录，请核对后重试', 409)
+  if (['-4', '-6', '-7'].includes(code)) fail('实名核验服务暂时不可用，请稍后重试', 503)
+  fail('实名核验未通过，请稍后重试', 502)
+}
+
+async function verifyTencent({ secretId, secretKey, region, realName, idNumber, timeout = 8000 }) {
+  const result = await postTencentJson({ secretId, secretKey, region, realName, idNumber, timeout })
+  return mapTencentResult(result?.Response)
 }
 
 export class IdentityProviderSettings {
@@ -73,30 +158,56 @@ export class IdentityProviderSettings {
   row() { return this.store.db.prepare('SELECT * FROM identity_provider_settings WHERE id=1').get() }
   settings() {
     const row=this.row()
-    const url=row?.endpoint ?? this.fallback.url ?? ''
+    const fallbackConfigured=Boolean((this.fallback.url ?? '') && this.fallback.token)
+    const mode=row?.provider || (fallbackConfigured ? 'CUSTOM' : 'TENCENT_FACEID')
+    const url=mode === 'TENCENT_FACEID' ? TENCENT_HOST : (row?.endpoint ?? this.fallback.url ?? '')
     const hasToken=Boolean(row ? row.token_cipher : this.fallback.token)
+    const secretId=row?.secret_id || ''
+    const hasSecretKey=Boolean(row?.secret_key_cipher)
+    const region=row?.region || 'ap-guangzhou'
     const enabled=row ? row.enabled===1 : Boolean(url && hasToken)
-    return { url, hasToken, enabled, configured:enabled && Boolean(url) && hasToken }
+    const configured=enabled && (mode === 'TENCENT_FACEID' ? Boolean(secretId && hasSecretKey) : Boolean(url && hasToken))
+    return { mode, url, hasToken, secretId, hasSecretKey, region, endpoint: mode === 'TENCENT_FACEID' ? TENCENT_HOST : url, enabled, configured }
   }
   save(body,actor) {
     if(typeof body.enabled!=='boolean') fail('请选择核验服务状态')
     const row=this.row()
-    const url=providerEndpoint(body.url ?? row?.endpoint ?? this.fallback.url ?? '')
-    const input=body.token??''
-    if(typeof input!=='string'||input.length>512||/[\r\n]/.test(input)) fail('核验供应商令牌格式无效')
-    if(input.trim()&&!url) fail('保存令牌前请填写供应商地址')
-    let cipher=row?.token_cipher||''
-    const addressChanged=this.settings().url!==url
-    if(addressChanged && cipher && !input.trim()) fail('更换供应商地址须重新填写令牌')
-    const secret=input.trim()||(!row && !addressChanged ? this.fallback.token : '')
-    if(secret){
-      if(!this.key) fail('系统加密密钥未就绪',503)
-      cipher=seal(secret,this.key)
+    const mode=body.mode == null ? (row?.provider || 'CUSTOM') : String(body.mode).toUpperCase()
+    if(!MODES.has(mode)) fail('实名服务商类型不正确')
+    let endpoint=row?.endpoint ?? this.fallback.url ?? ''
+    let tokenCipher=row?.token_cipher || ''
+    let secretId=row?.secret_id || ''
+    let secretKeyCipher=row?.secret_key_cipher || ''
+    let region=row?.region || 'ap-guangzhou'
+    if(mode === 'TENCENT_FACEID') {
+      secretId=optionalText(body.secretId ?? secretId, '腾讯云 SecretId', 128)
+      region=optionalText(body.region ?? region, '腾讯云地域', 40) || 'ap-guangzhou'
+      if(!TENCENT_REGION.test(region)) fail('腾讯云地域格式不正确')
+      const input=body.secretKey ?? ''
+      if(typeof input!=='string'||input.length>512||/[\r\n]/.test(input)) fail('腾讯云 SecretKey 格式无效')
+      if(input.trim()) {
+        if(!this.key) fail('系统加密密钥未就绪',503)
+        secretKeyCipher=seal(input.trim(),this.key)
+      }
+      endpoint=TENCENT_HOST
+      if(body.enabled && (!secretId || !secretKeyCipher)) fail('启用前请填写腾讯云 SecretId 和 SecretKey')
+    } else {
+      endpoint=providerEndpoint(body.url ?? endpoint)
+      const input=body.token??''
+      if(typeof input!=='string'||input.length>512||/[\r\n]/.test(input)) fail('核验供应商令牌格式无效')
+      if(input.trim()&&!endpoint) fail('保存令牌前请填写供应商地址')
+      const addressChanged=this.settings().url!==endpoint
+      if(addressChanged && tokenCipher && !input.trim()) fail('更换供应商地址须重新填写令牌')
+      if(input.trim()) {
+        if(!this.key) fail('系统加密密钥未就绪',503)
+        tokenCipher=seal(input.trim(),this.key)
+      }
+      if(body.enabled && (!endpoint || !tokenCipher)) fail('启用前请填写核验地址和令牌')
     }
-    if(body.enabled&&(!url||!cipher)) fail('启用前请填写核验地址和令牌')
     this.store.transaction(()=>{
-      this.store.db.prepare('INSERT INTO identity_provider_settings(id,endpoint,token_cipher,enabled) VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET endpoint=excluded.endpoint,token_cipher=excluded.token_cipher,enabled=excluded.enabled').run(url,cipher,body.enabled?1:0)
-      this.store.audit(actor,'UPDATE_IDENTITY_PROVIDER','identity-provider',{enabled:body.enabled,hasToken:Boolean(cipher)})
+      this.store.db.prepare('INSERT INTO identity_provider_settings(id,provider,endpoint,token_cipher,secret_id,secret_key_cipher,region,enabled) VALUES(1,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET provider=excluded.provider,endpoint=excluded.endpoint,token_cipher=excluded.token_cipher,secret_id=excluded.secret_id,secret_key_cipher=excluded.secret_key_cipher,region=excluded.region,enabled=excluded.enabled')
+        .run(mode,endpoint,tokenCipher,secretId,secretKeyCipher,region,body.enabled?1:0)
+      this.store.audit(actor,'UPDATE_IDENTITY_PROVIDER','identity-provider',{mode,enabled:body.enabled,hasToken:Boolean(tokenCipher),hasSecretKey:Boolean(secretKeyCipher),region})
     })
     return this.settings()
   }
@@ -104,6 +215,12 @@ export class IdentityProviderSettings {
   async verify({realName,idNumber}) {
     if(!this.configured()) fail('实名核验服务未配置',503)
     const row=this.row()
+    if(row?.provider === 'TENCENT_FACEID') {
+      let secretKey
+      try { secretKey=open(row.secret_key_cipher,this.key) }
+      catch { fail('腾讯云 SecretKey 无法解密',503) }
+      return verifyTencent({ secretId: row.secret_id, secretKey, region: row.region || 'ap-guangzhou', realName, idNumber })
+    }
     const result=await postIdentityJson(row?.endpoint ?? this.fallback.url,row ? open(row.token_cipher,this.key) : this.fallback.token,{name:realName,idNumber})
     if(typeof result?.matched!=='boolean') throw new Error('identity_response_invalid')
     return {matched:result.matched,reference:typeof result.requestId==='string'?result.requestId.slice(0,128):''}
