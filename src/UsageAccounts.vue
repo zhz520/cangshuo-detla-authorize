@@ -10,7 +10,7 @@
         :description="provider.mode === 'ALIYUN_CLOUD_AUTH' ? '授权中心调用阿里云 cloudauth Id2MetaVerify，后付费 0.2 元/次；只有核验一致/不一致计费，接口异常或无记录不扣费。只需填写阿里云 AccessKey。' : provider.mode === 'TENCENT_FACEID' ? '授权中心使用腾讯云 IdCardVerification 接口，只需填写腾讯云 API 密钥，不需要自建转发服务。' : '接口需接受 POST JSON：{ name, idNumber }，并返回 { matched: true|false, requestId }；令牌通过 Authorization: Bearer 发送。'" />
       <el-form label-position="top" class="identity-provider-form" :disabled="loading || savingProvider">
         <el-row :gutter="16">
-          <el-col :xs="24" :md="12"><el-form-item label="服务商类型"><el-select v-model="provider.mode"><el-option label="阿里云二要素（推荐）" value="ALIYUN_CLOUD_AUTH" /><el-option label="腾讯云二要素" value="TENCENT_FACEID" /><el-option label="自定义 HTTPS 接口" value="CUSTOM" /></el-select></el-form-item></el-col>
+          <el-col :xs="24" :md="12"><el-form-item label="服务商类型"><el-select v-model="provider.mode" @change="switchProviderMode"><el-option label="阿里云二要素（推荐）" value="ALIYUN_CLOUD_AUTH" /><el-option label="腾讯云二要素" value="TENCENT_FACEID" /><el-option label="自定义 HTTPS 接口" value="CUSTOM" /></el-select></el-form-item></el-col>
           <el-col :xs="24" :md="12"><el-form-item label="启用实名供应商"><el-switch v-model="provider.enabled" /></el-form-item></el-col>
         </el-row>
         <el-row v-if="provider.mode === 'ALIYUN_CLOUD_AUTH'" :gutter="16">
@@ -138,7 +138,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 const props = defineProps({ api: Function })
 const rows = ref([]), packages = ref([]), loading = ref(false), saving = ref(false)
-const provider = reactive({mode:'ALIYUN_CLOUD_AUTH',url:'',token:'',hasToken:false,secretId:'',secretKey:'',hasSecretKey:false,region:'ap-guangzhou',enabled:false,configured:false})
+const provider = reactive({mode:'ALIYUN_CLOUD_AUTH',url:'',token:'',hasToken:false,secretId:'',secretKey:'',hasSecretKey:false,region:'ap-guangzhou',enabled:false,configured:false,credentials:{}})
 const savingProvider=ref(false)
 const current = ref(null), accountVisible = ref(false), creditVisible = ref(false), grantVisible = ref(false)
 const detailVisible = ref(false), detailTab = ref('requests'), requests = ref([]), ledger = ref([])
@@ -172,6 +172,15 @@ async function load() {
   }
   catch (error) { ElMessage.error(error.message) }
   finally { loading.value = false }
+}
+function switchProviderMode(mode) {
+  const saved = provider.credentials?.[mode] || {}
+  provider.secretId = saved.secretId || ''
+  provider.secretKey = ''
+  provider.hasSecretKey = Boolean(saved.hasSecretKey)
+  provider.region = saved.region || 'ap-guangzhou'
+  provider.url = saved.url || ''
+  provider.hasToken = Boolean(saved.hasToken)
 }
 async function saveProvider() {
   savingProvider.value=true

@@ -224,14 +224,26 @@ export class IdentityProviderSettings {
     const row=this.row()
     const fallbackConfigured=Boolean((this.fallback.url ?? '') && this.fallback.token)
     const mode=row?.provider || (fallbackConfigured ? 'CUSTOM' : 'ALIYUN_CLOUD_AUTH')
-    const url=mode === 'TENCENT_FACEID' ? TENCENT_HOST : mode === 'ALIYUN_CLOUD_AUTH' ? ALIYUN_HOST : (row?.endpoint ?? this.fallback.url ?? '')
-    const hasToken=Boolean(row ? row.token_cipher : this.fallback.token)
-    const secretId=row?.secret_id || ''
-    const hasSecretKey=Boolean(row?.secret_key_cipher)
-    const region=row?.region || 'ap-guangzhou'
-    const enabled=row ? row.enabled===1 : Boolean(url && hasToken)
-    const configured=enabled && (mode === 'TENCENT_FACEID' ? Boolean(secretId && hasSecretKey) : mode === 'ALIYUN_CLOUD_AUTH' ? Boolean(secretId && hasSecretKey) : Boolean(url && hasToken))
-    return { mode, url, hasToken, secretId, hasSecretKey, region, endpoint: mode === 'TENCENT_FACEID' ? TENCENT_HOST : mode === 'ALIYUN_CLOUD_AUTH' ? ALIYUN_HOST : url, enabled, configured }
+    const aliyunId=row?.aliyun_access_key_id || ''
+    const aliyunHasSecret=Boolean(row?.aliyun_access_key_cipher)
+    const tencentId=row?.tencent_secret_id || row?.secret_id || ''
+    const tencentHasSecret=Boolean(row?.tencent_secret_key_cipher || row?.secret_key_cipher)
+    const tencentRegion=row?.tencent_region || row?.region || 'ap-guangzhou'
+    const customUrl=row?.endpoint ?? this.fallback.url ?? ''
+    const customHasToken=Boolean(row?.token_cipher ?? this.fallback.token)
+    const url=mode === 'TENCENT_FACEID' ? TENCENT_HOST : mode === 'ALIYUN_CLOUD_AUTH' ? ALIYUN_HOST : customUrl
+    const hasToken=customHasToken
+    const secretId=mode === 'ALIYUN_CLOUD_AUTH' ? aliyunId : mode === 'TENCENT_FACEID' ? tencentId : ''
+    const hasSecretKey=mode === 'ALIYUN_CLOUD_AUTH' ? aliyunHasSecret : mode === 'TENCENT_FACEID' ? tencentHasSecret : false
+    const region=mode === 'TENCENT_FACEID' ? tencentRegion : (row?.region || 'ap-guangzhou')
+    const enabled=row ? row.enabled===1 : Boolean(customUrl && customHasToken)
+    const configured=enabled && (mode === 'ALIYUN_CLOUD_AUTH' ? Boolean(aliyunId && aliyunHasSecret) : mode === 'TENCENT_FACEID' ? Boolean(tencentId && tencentHasSecret) : Boolean(customUrl && customHasToken))
+    return { mode, url, hasToken, secretId, hasSecretKey, region, endpoint: mode === 'TENCENT_FACEID' ? TENCENT_HOST : mode === 'ALIYUN_CLOUD_AUTH' ? ALIYUN_HOST : customUrl, enabled, configured,
+      credentials: {
+        ALIYUN_CLOUD_AUTH: { secretId: aliyunId, hasSecretKey: aliyunHasSecret },
+        TENCENT_FACEID: { secretId: tencentId, hasSecretKey: tencentHasSecret, region: tencentRegion },
+        CUSTOM: { url: customUrl, hasToken: customHasToken }
+      } }
   }
   save(body,actor) {
     if(typeof body.enabled!=='boolean') fail('请选择核验服务状态')
@@ -242,32 +254,31 @@ export class IdentityProviderSettings {
     if(!MODES.has(mode)) fail('实名服务商类型不正确')
     let endpoint=row?.endpoint ?? this.fallback.url ?? ''
     let tokenCipher=row?.token_cipher || ''
-    let secretId=row?.secret_id || ''
-    let secretKeyCipher=row?.secret_key_cipher || ''
-    let region=row?.region || 'ap-guangzhou'
+    let aliyunId=row?.aliyun_access_key_id || ''
+    let aliyunCipher=row?.aliyun_access_key_cipher || ''
+    let tencentId=row?.tencent_secret_id || row?.secret_id || ''
+    let tencentCipher=row?.tencent_secret_key_cipher || row?.secret_key_cipher || ''
+    let tencentRegion=row?.tencent_region || row?.region || 'ap-guangzhou'
     if(mode === 'ALIYUN_CLOUD_AUTH') {
-      secretId=optionalText(body.secretId ?? secretId, '阿里云 AccessKey ID', 128)
+      aliyunId=optionalText(body.secretId ?? aliyunId, '阿里云 AccessKey ID', 128)
       const input=body.secretKey ?? ''
       if(typeof input!=='string'||input.length>512||/[\r\n]/.test(input)) fail('阿里云 AccessKey Secret 格式无效')
       if(input.trim()) {
         if(!this.key) fail('系统加密密钥未就绪',503)
-        secretKeyCipher=seal(input.trim(),this.key)
+        aliyunCipher=seal(input.trim(),this.key)
       }
-      endpoint=ALIYUN_HOST
-      region=''
-      if(body.enabled && (!secretId || !secretKeyCipher)) fail('启用前请填写阿里云 AccessKey ID 和 AccessKey Secret')
+      if(body.enabled && (!aliyunId || !aliyunCipher)) fail('启用前请填写阿里云 AccessKey ID 和 AccessKey Secret')
     } else if(mode === 'TENCENT_FACEID') {
-      secretId=optionalText(body.secretId ?? secretId, '腾讯云 SecretId', 128)
-      region=optionalText(body.region ?? region, '腾讯云地域', 40) || 'ap-guangzhou'
-      if(!TENCENT_REGION.test(region)) fail('腾讯云地域格式不正确')
+      tencentId=optionalText(body.secretId ?? tencentId, '腾讯云 SecretId', 128)
+      tencentRegion=optionalText(body.region ?? tencentRegion, '腾讯云地域', 40) || 'ap-guangzhou'
+      if(!TENCENT_REGION.test(tencentRegion)) fail('腾讯云地域格式不正确')
       const input=body.secretKey ?? ''
       if(typeof input!=='string'||input.length>512||/[\r\n]/.test(input)) fail('腾讯云 SecretKey 格式无效')
       if(input.trim()) {
         if(!this.key) fail('系统加密密钥未就绪',503)
-        secretKeyCipher=seal(input.trim(),this.key)
+        tencentCipher=seal(input.trim(),this.key)
       }
-      endpoint=TENCENT_HOST
-      if(body.enabled && (!secretId || !secretKeyCipher)) fail('启用前请填写腾讯云 SecretId 和 SecretKey')
+      if(body.enabled && (!tencentId || !tencentCipher)) fail('启用前请填写腾讯云 SecretId 和 SecretKey')
     } else {
       endpoint=providerEndpoint(body.url ?? endpoint)
       const input=body.token??''
@@ -282,9 +293,9 @@ export class IdentityProviderSettings {
       if(body.enabled && (!endpoint || !tokenCipher)) fail('启用前请填写核验地址和令牌')
     }
     this.store.transaction(()=>{
-      this.store.db.prepare('INSERT INTO identity_provider_settings(id,provider,endpoint,token_cipher,secret_id,secret_key_cipher,region,enabled) VALUES(1,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET provider=excluded.provider,endpoint=excluded.endpoint,token_cipher=excluded.token_cipher,secret_id=excluded.secret_id,secret_key_cipher=excluded.secret_key_cipher,region=excluded.region,enabled=excluded.enabled')
-        .run(mode,endpoint,tokenCipher,secretId,secretKeyCipher,region,body.enabled?1:0)
-      this.store.audit(actor,'UPDATE_IDENTITY_PROVIDER','identity-provider',{mode,enabled:body.enabled,hasToken:Boolean(tokenCipher),hasSecretKey:Boolean(secretKeyCipher),region})
+      this.store.db.prepare('INSERT INTO identity_provider_settings(id,provider,endpoint,token_cipher,secret_id,secret_key_cipher,region,aliyun_access_key_id,aliyun_access_key_cipher,tencent_secret_id,tencent_secret_key_cipher,tencent_region,enabled) VALUES(1,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET provider=excluded.provider,endpoint=excluded.endpoint,token_cipher=excluded.token_cipher,secret_id=excluded.secret_id,secret_key_cipher=excluded.secret_key_cipher,region=excluded.region,aliyun_access_key_id=excluded.aliyun_access_key_id,aliyun_access_key_cipher=excluded.aliyun_access_key_cipher,tencent_secret_id=excluded.tencent_secret_id,tencent_secret_key_cipher=excluded.tencent_secret_key_cipher,tencent_region=excluded.tencent_region,enabled=excluded.enabled')
+        .run(mode,endpoint,tokenCipher,row?.secret_id||'',row?.secret_key_cipher||'',row?.region||'ap-guangzhou',aliyunId,aliyunCipher,tencentId,tencentCipher,tencentRegion,body.enabled?1:0)
+      this.store.audit(actor,'UPDATE_IDENTITY_PROVIDER','identity-provider',{mode,enabled:body.enabled,hasToken:Boolean(tokenCipher),aliyunHasSecret:Boolean(aliyunCipher),tencentHasSecret:Boolean(tencentCipher),tencentRegion})
     })
     return this.settings()
   }
@@ -294,15 +305,15 @@ export class IdentityProviderSettings {
     const row=this.row()
     if(row?.provider === 'TENCENT_FACEID') {
       let secretKey
-      try { secretKey=open(row.secret_key_cipher,this.key) }
+      try { secretKey=open(row.tencent_secret_key_cipher || row.secret_key_cipher,this.key) }
       catch { fail('腾讯云 SecretKey 无法解密',503) }
-      return verifyTencent({ secretId: row.secret_id, secretKey, region: row.region || 'ap-guangzhou', realName, idNumber })
+      return verifyTencent({ secretId: row.tencent_secret_id || row.secret_id, secretKey, region: row.tencent_region || row.region || 'ap-guangzhou', realName, idNumber })
     }
     if(row?.provider === 'ALIYUN_CLOUD_AUTH') {
       let secretKey
-      try { secretKey=open(row.secret_key_cipher,this.key) }
+      try { secretKey=open(row.aliyun_access_key_cipher,this.key) }
       catch { fail('阿里云 AccessKey Secret 无法解密',503) }
-      return verifyAliyun({ accessKeyId: row.secret_id, accessKeySecret: secretKey, realName, idNumber })
+      return verifyAliyun({ accessKeyId: row.aliyun_access_key_id, accessKeySecret: secretKey, realName, idNumber })
     }
     const result=await postIdentityJson(row?.endpoint ?? this.fallback.url,row ? open(row.token_cipher,this.key) : this.fallback.token,{name:realName,idNumber})
     if(typeof result?.matched!=='boolean') throw new Error('identity_response_invalid')

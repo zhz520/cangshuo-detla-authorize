@@ -33,7 +33,7 @@ test('saved provider and receipt credentials are encrypted, redacted and require
     const headers={cookie,'x-csrf-token':csrf}
     const provider=await send('/api/usage/provider',payload,headers)
     assert.equal(provider.status,200)
-    assert.deepEqual(await provider.json(),{mode:'CUSTOM',url:payload.url,hasToken:true,secretId:'',hasSecretKey:false,region:'ap-guangzhou',endpoint:payload.url,enabled:true,configured:true})
+    assert.deepEqual(await provider.json(),{mode:'CUSTOM',url:payload.url,hasToken:true,secretId:'',hasSecretKey:false,region:'ap-guangzhou',endpoint:payload.url,enabled:true,configured:true,credentials:{ALIYUN_CLOUD_AUTH:{secretId:'',hasSecretKey:false},TENCENT_FACEID:{secretId:'',hasSecretKey:false,region:'ap-guangzhou'},CUSTOM:{url:payload.url,hasToken:true}}})
     assert.equal((await send('/api/usage/provider',{...payload,url:'https://other.example.org/verify',token:''},headers)).status,400)
     const s=await send('/api/sms/settings',{enabled:true,accessKeyId:'fake-id',accessKeySecret:'fake-secret',defaultSignName:'测试',receiptKey},headers)
     assert.equal(s.status,200)
@@ -61,8 +61,8 @@ test('Tencent FaceID keys are encrypted and result codes map to billable or reje
     const payload={mode:'TENCENT_FACEID',secretId:'AKID-test-secret-id',secretKey:'tencent-secret-key',region:'ap-guangzhou',enabled:true}
     const provider=await send('/api/usage/provider',payload,headers)
     assert.equal(provider.status,200)
-    assert.deepEqual(await provider.json(),{mode:'TENCENT_FACEID',url:'faceid.tencentcloudapi.com',hasToken:false,secretId:'AKID-test-secret-id',hasSecretKey:true,region:'ap-guangzhou',endpoint:'faceid.tencentcloudapi.com',enabled:true,configured:true})
-    assert.notEqual(store.db.prepare('SELECT secret_key_cipher FROM identity_provider_settings').get().secret_key_cipher,'tencent-secret-key')
+    assert.deepEqual(await provider.json(),{mode:'TENCENT_FACEID',url:'faceid.tencentcloudapi.com',hasToken:false,secretId:'AKID-test-secret-id',hasSecretKey:true,region:'ap-guangzhou',endpoint:'faceid.tencentcloudapi.com',enabled:true,configured:true,credentials:{ALIYUN_CLOUD_AUTH:{secretId:'',hasSecretKey:false},TENCENT_FACEID:{secretId:'AKID-test-secret-id',hasSecretKey:true,region:'ap-guangzhou'},CUSTOM:{url:'',hasToken:false}}})
+    assert.notEqual(store.db.prepare('SELECT tencent_secret_key_cipher FROM identity_provider_settings').get().tencent_secret_key_cipher,'tencent-secret-key')
     assert.equal((await send('/api/usage/provider',{...payload,secretKey:''},headers)).status,200)
   } finally { await new Promise(resolve=>server.close(resolve));store.close() }
 })
@@ -112,7 +112,14 @@ test('Aliyun Cloud Auth credentials are encrypted and redacted', async ()=>{
     const payload={mode:'ALIYUN_CLOUD_AUTH',secretId:'LTAI-test',secretKey:'aliyun-secret',enabled:true}
     const provider=await send('/api/usage/provider',payload,headers)
     assert.equal(provider.status,200)
-    assert.deepEqual(await provider.json(),{mode:'ALIYUN_CLOUD_AUTH',url:'cloudauth.aliyuncs.com',hasToken:false,secretId:'LTAI-test',hasSecretKey:true,region:'ap-guangzhou',endpoint:'cloudauth.aliyuncs.com',enabled:true,configured:true})
-    assert.notEqual(store.db.prepare('SELECT secret_key_cipher FROM identity_provider_settings').get().secret_key_cipher,'aliyun-secret')
+    assert.deepEqual(await provider.json(),{mode:'ALIYUN_CLOUD_AUTH',url:'cloudauth.aliyuncs.com',hasToken:false,secretId:'LTAI-test',hasSecretKey:true,region:'ap-guangzhou',endpoint:'cloudauth.aliyuncs.com',enabled:true,configured:true,credentials:{ALIYUN_CLOUD_AUTH:{secretId:'LTAI-test',hasSecretKey:true},TENCENT_FACEID:{secretId:'',hasSecretKey:false,region:'ap-guangzhou'},CUSTOM:{url:'',hasToken:false}}})
+    assert.notEqual(store.db.prepare('SELECT aliyun_access_key_cipher FROM identity_provider_settings').get().aliyun_access_key_cipher,'aliyun-secret')
+    assert.equal((await send('/api/usage/provider',{mode:'TENCENT_FACEID',secretId:'AKID-test',secretKey:'tencent-secret',region:'ap-guangzhou',enabled:true},headers)).status,200)
+    const switchedBack=await send('/api/usage/provider',{mode:'ALIYUN_CLOUD_AUTH',secretId:'LTAI-test',secretKey:'',enabled:true},headers)
+    assert.equal(switchedBack.status,200)
+    assert.equal((await switchedBack.json()).hasSecretKey,true)
+    const tencentBack=await send('/api/usage/provider',{mode:'TENCENT_FACEID',secretId:'AKID-test',secretKey:'',region:'ap-guangzhou',enabled:true},headers)
+    assert.equal(tencentBack.status,200)
+    assert.equal((await tencentBack.json()).hasSecretKey,true)
   } finally { await new Promise(resolve=>server.close(resolve));store.close() }
 })
