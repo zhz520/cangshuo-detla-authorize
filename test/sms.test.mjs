@@ -6,6 +6,7 @@ import { SmsService } from '../server/sms.mjs'
 import { SmsProviderUncertain } from '../server/sms-provider.mjs'
 
 const masterKey = randomBytes(32).toString('base64')
+const receiptKey = randomBytes(32).toString('base64')
 const sha256 = value => createHash('sha256').update(String(value)).digest('hex')
 
 function setup() {
@@ -25,7 +26,7 @@ function setup() {
       return { accepted: true, bizId: 'biz-1', requestId: 'req-1' }
     }
   }
-  const service = new SmsService(store, { provider, masterKey, phoneHashKey: 'phone-test-key', defaultMode: 'METERED', defaultPriceCents: 5 })
+  const service = new SmsService(store, { provider, masterKey, receiptKey, phoneHashKey: 'phone-test-key', defaultMode: 'METERED', defaultPriceCents: 5 })
   service.saveSettings({ enabled: true, accessKeyId: 'test-key', accessKeySecret: 'test-secret', defaultSignName: '测试签名' }, 'owner')
   service.saveTemplate({ templateKey: 'otp_login', name: '登录验证码', scene: 'LOGIN', providerTemplateCode: 'SMS_TEST', variables: [{ key: 'code', required: true, maxLength: 6 }], status: 'ACTIVE', billable: true }, 'owner')
   service.saveAccount(project, { billingMode: 'METERED', unitPriceCents: 5, dailyLimit: 0, monthlyLimit: 0, lowBalanceCents: 0, enabled: true }, 'owner')
@@ -33,7 +34,10 @@ function setup() {
   return { store, project, instance, service, provider, get calls() { return calls }, set outcome(value) { outcome = value } }
 }
 
-test('metered send charges once and idempotent replay does not resend', async () => {
+const receipt = (service, result, success = true, biz = 'biz-1') =>
+  service.applyReceipts([{ out_id: result.requestId, biz_id: biz, success }])
+
+test('metered send reserves on acceptance, charges once on receipt, and never resends on replay', async () => {
   const fixture = setup()
   try {
     const first = await fixture.service.send(fixture.instance, { templateKey: 'otp_login', phone: '13800138000', variables: { code: '123456' } }, 'sms-key-0001')
@@ -41,7 +45,13 @@ test('metered send charges once and idempotent replay does not resend', async ()
     assert.equal(first.status, 'ACCEPTED')
     assert.equal(second.status, 'ACCEPTED')
     assert.equal(fixture.calls, 1)
+    assert.equal(fixture.service.accountDetail(fixture.project).balance_cents, 100)
+    assert.equal(fixture.service.usageSummary(fixture.project).pending_count, 1)
+    assert.equal(receipt(fixture.service, first, true, 'wrong-biz').processed, 0)
+    assert.equal(receipt(fixture.service, first).processed, 1)
+    assert.equal(receipt(fixture.service, first).processed, 0)
     assert.equal(fixture.service.accountDetail(fixture.project).balance_cents, 95)
+    assert.equal(fixture.service.usageSummary(fixture.project).delivered_count, 1)
     assert.equal(fixture.store.db.prepare("SELECT COUNT(*) AS count FROM sms_ledger WHERE type='CHARGE'").get().count, 1)
   } finally { fixture.store.close() }
 })
@@ -54,6 +64,7 @@ test('package mode consumes package units and does not debit wallet', async () =
     fixture.service.grantPackage(fixture.project, pkg.id, 'owner')
     const result = await fixture.service.send(fixture.instance, { templateKey: 'otp_login', phone: '13800138000', variables: { code: '654321' } }, 'sms-key-0002')
     assert.equal(result.status, 'ACCEPTED')
+    assert.equal(receipt(fixture.service, result).processed, 1)
     assert.equal(fixture.service.accountDetail(fixture.project).balance_cents, 100)
     const balance = fixture.store.db.prepare('SELECT remaining_count,reserved_count FROM sms_package_balances WHERE project_id=?').get(fixture.project)
     assert.equal(balance.remaining_count, 9)
@@ -71,7 +82,27 @@ test('hybrid consumes an available package first and then falls back to the wall
     const second = await fixture.service.send(fixture.instance, { templateKey: 'otp_login', phone: '13800138000', variables: { code: '222222' } }, 'sms-key-hybrid-2')
     assert.equal(first.billing.mode, 'PACKAGE')
     assert.equal(second.billing.mode, 'METERED')
+    receipt(fixture.service, first)
+    receipt(fixture.service, second)
     assert.equal(fixture.service.accountDetail(fixture.project).balance_cents, 95)
+  } finally { fixture.store.close() }
+})
+
+test('delivery failure releases wallet and unknown send can be resolved by a verified receipt', async () => {
+  const fixture = setup()
+  try {
+    const body = { templateKey: 'otp_login', phone: '13800138000', variables: { code: '444444' } }
+    const first = await fixture.service.send(fixture.instance, body, 'sms-key-fail-report')
+    assert.equal(receipt(fixture.service, first, false).processed, 1)
+    assert.equal(fixture.service.accountDetail(fixture.project).reserved_cents, 0)
+    assert.equal(fixture.service.accountDetail(fixture.project).balance_cents, 100)
+    fixture.outcome = 'uncertain'
+    const unknown = await fixture.service.send(fixture.instance, body, 'sms-key-unknown-report')
+    assert.equal(unknown.status, 'UNKNOWN')
+    await assert.rejects(fixture.service.send(fixture.instance, { ...body, phone: '13800138001' }, 'sms-key-unknown-report'), /幂等键/)
+    receipt(fixture.service, unknown)
+    assert.equal(fixture.service.accountDetail(fixture.project).balance_cents, 95)
+    assert.equal(fixture.service.usageSummary(fixture.project).failed_count, 1)
   } finally { fixture.store.close() }
 })
 
@@ -122,10 +153,11 @@ test('client HMAC credentials reject replay and accept a valid request', async (
     const nonce = 'nonce-12345678'
     const body = { instanceId: fixture.instance, templateKey: 'otp_login', phone: '13800138000', variables: { code: '333333' } }
     const raw = JSON.stringify(body)
-    const message = ['POST', '/api/sms/v1/send', timestamp, nonce, sha256(raw)].join(String.fromCharCode(10))
+    const message = ['POST', '/api/sms/v1/send', timestamp, nonce, '', sha256(raw)].join(String.fromCharCode(10))
     const signature = createHmac('sha256', credential.secret).update(message).digest('hex')
     const headers = { 'x-sms-instance': fixture.instance, 'x-sms-timestamp': timestamp, 'x-sms-nonce': nonce, 'x-sms-signature': signature }
     assert.equal(fixture.service.verifyClient(headers, 'POST', '/api/sms/v1/send', raw, body), fixture.instance)
+    assert.throws(() => fixture.service.verifyClient(headers, 'POST', '/api/sms/v1/send', raw, body), /已使用/)
     assert.throws(() => fixture.service.verifyClient({ ...headers, 'x-sms-signature': '0'.repeat(64) }, 'POST', '/api/sms/v1/send', raw, body), /认证失败/)
   } finally { fixture.store.close() }
 })

@@ -27,12 +27,12 @@ export class SmsPackagePaymentService {
   }
 
   summary(token) {
-    const row = this.store.db.prepare('SELECT s.token_hash,s.expires_at,o.id AS order_id,o.project_id,o.package_product_id,o.amount_cents,o.status,o.paid_at,o.granted_at,p.name AS package_name,p.message_count,p.validity_days,pr.name AS project_name,c.name AS customer_name,pay.enabled AS provider_enabled,pay.methods AS provider_methods FROM sms_package_checkout_sessions s JOIN sms_package_orders o ON o.id=s.package_order_id JOIN sms_package_products p ON p.id=o.package_product_id JOIN projects pr ON pr.id=o.project_id JOIN customers c ON c.id=pr.customer_id LEFT JOIN payment_providers pay ON pay.id=pr.payment_provider WHERE s.token_hash=?')
+    const row = this.store.db.prepare('SELECT s.token_hash,s.expires_at,o.id AS order_id,o.project_id,o.package_product_id,o.amount_cents,o.status,o.paid_at,o.granted_at,o.package_name,o.message_count,o.validity_days,pr.name AS project_name,c.name AS customer_name,pr.payment_methods AS project_methods,pay.enabled AS provider_enabled,pay.methods AS provider_methods FROM sms_package_checkout_sessions s JOIN sms_package_orders o ON o.id=s.package_order_id JOIN projects pr ON pr.id=o.project_id JOIN customers c ON c.id=pr.customer_id LEFT JOIN payment_providers pay ON pay.id=pr.payment_provider WHERE s.token_hash=?')
       .get(this.hash(this.payments.validateToken(token)))
     if (!row) fail('套餐支付链接不存在或已失效', 404)
     if (row.expires_at <= Date.now()) fail('套餐支付链接已过期，请重新发起购买', 410)
     const enabled = row.provider_enabled === 1 ? JSON.parse(row.provider_methods || '[]') : []
-    const methods = enabled.filter(method => ['NATIVE'].includes(method))
+    const methods = enabled.filter(method => method === 'NATIVE' && JSON.parse(row.project_methods || '[]').includes(method))
     let paymentReady = false
     try { this.payments.wechatConfig(true); paymentReady = methods.length > 0 } catch {}
     return { orderId: row.order_id, packageName: row.package_name, amountCents: row.amount_cents, messageCount: row.message_count, validityDays: row.validity_days, projectName: row.project_name, customerName: row.customer_name, status: row.granted_at ? 'GRANTED' : row.status, paidAt: row.paid_at, grantedAt: row.granted_at, expiresAt: new Date(row.expires_at).toISOString(), methods, paymentReady }
@@ -51,16 +51,18 @@ export class SmsPackagePaymentService {
   async prepay(token) {
     const context = this.context(token)
     if (context.summary.status === 'GRANTED') return null
+    if (context.summary.status === 'PAID') fail('套餐已收款，正在确认发放，请勿再次支付', 409)
+    if (!context.summary.paymentReady) fail('短信套餐扫码支付未启用', 503)
     const config = this.payments.wechatConfig(true)
     let payment = context.payment
     if (!payment) {
       const outTradeNo = 'SMSPKG' + Date.now() + randomBytes(8).toString('hex')
-      payment = { id: randomUUID(), package_order_id: context.row.order_id, out_trade_no: outTradeNo, amount_cents: context.row.amount_cents, status: 'UNPAID' }
+      payment = { id: randomUUID(), package_order_id: context.row.order_id, out_trade_no: outTradeNo, amount_cents: context.row.amount_cents, method: 'NATIVE', status: 'UNPAID', created_at: new Date().toISOString() }
       this.store.db.prepare('INSERT INTO sms_package_payments(id,package_order_id,out_trade_no,method,amount_cents,status,created_at) VALUES (?,?,?,?,?,?,?)')
         .run(payment.id, payment.package_order_id, payment.out_trade_no, 'NATIVE', payment.amount_cents, 'UNPAID', new Date().toISOString())
     }
     if (payment.method !== 'NATIVE') fail('该套餐订单已选择其他支付方式', 409)
-    if (payment.prepay_id) return { method: 'NATIVE', codeUrl: payment.prepay_id }
+    if (payment.prepay_id && Date.now() - Date.parse(payment.created_at) < 2 * 3600000) return { method: 'NATIVE', codeUrl: payment.prepay_id }
     const data = await this.payments.wechatRequest('POST', '/v3/pay/transactions/native', {
       appid: config.appId || config.officialAppId,
       mchid: config.merchantId,
@@ -70,7 +72,8 @@ export class SmsPackagePaymentService {
       amount: { total: payment.amount_cents, currency: 'CNY' }
     })
     if (!data.code_url) fail('微信支付未返回二维码地址', 502)
-    this.store.db.prepare('UPDATE sms_package_payments SET prepay_id=?,status=? WHERE id=?').run(data.code_url, 'PREPAY', payment.id)
+    const updated = this.store.db.prepare("UPDATE sms_package_payments SET prepay_id=?,status='PREPAY' WHERE id=? AND status IN ('UNPAID','PREPAY')").run(data.code_url, payment.id)
+    if (!updated.changes) return null
     return { method: 'NATIVE', codeUrl: data.code_url }
   }
 
@@ -87,17 +90,21 @@ export class SmsPackagePaymentService {
   }
 
   async notification(transaction, config) {
-    const payment = this.store.db.prepare('SELECT p.*,o.amount_cents AS order_amount FROM sms_package_payments p JOIN sms_package_orders o ON o.id=p.package_order_id WHERE p.out_trade_no=?').get(transaction.out_trade_no)
-    if (!payment) return null
-    if (payment.status === 'PAID' && payment.transaction_id === transaction.transaction_id && payment.order_amount === transaction.amount?.total) {
-      return { paid: true, smsPackage: true, orderId: payment.package_order_id, idempotent: true }
-    }
-    if (transaction.mchid !== config.merchantId || !([config.officialAppId, config.appId].filter(Boolean).includes(transaction.appid))) fail('微信支付通知商户或 AppID 不匹配', 409)
-    if (transaction.amount?.total !== payment.order_amount || (transaction.amount?.currency && transaction.amount.currency !== 'CNY')) fail('微信支付通知金额不匹配', 409)
-    if (!transaction.transaction_id || transaction.transaction_id.length > 128) fail('微信支付交易号无效', 409)
-    this.store.db.prepare("UPDATE sms_package_payments SET status='PAID',transaction_id=?,paid_at=? WHERE id=?").run(transaction.transaction_id, new Date().toISOString(), payment.id)
-    this.sms.markPackagePaid(payment.package_order_id, { transactionId: transaction.transaction_id, amountCents: payment.order_amount, reference: transaction.transaction_id })
-    return { paid: true, smsPackage: true, orderId: payment.package_order_id }
+    return this.store.transaction(() => {
+      const payment = this.store.db.prepare('SELECT p.*,o.amount_cents AS order_amount,o.status AS order_status,o.granted_at FROM sms_package_payments p JOIN sms_package_orders o ON o.id=p.package_order_id WHERE p.out_trade_no=?').get(transaction.out_trade_no)
+      if (!payment) return null
+      if (transaction.mchid !== config.merchantId || !([config.officialAppId, config.appId].filter(Boolean).includes(transaction.appid))) fail('微信支付通知商户或 AppID 不匹配', 409)
+      if (transaction.amount?.total !== payment.order_amount || (transaction.amount?.currency && transaction.amount.currency !== 'CNY')) fail('微信支付通知金额不匹配', 409)
+      if (!transaction.transaction_id || transaction.transaction_id.length > 128) fail('微信支付交易号无效', 409)
+      if (payment.status === 'PAID') {
+        if (payment.transaction_id !== transaction.transaction_id) fail('微信支付交易号冲突', 409)
+        if (payment.order_status === 'GRANTED' || payment.granted_at) return { paid: true, smsPackage: true, orderId: payment.package_order_id, idempotent: true }
+      } else {
+        this.store.db.prepare("UPDATE sms_package_payments SET status='PAID',transaction_id=?,paid_at=? WHERE id=?").run(transaction.transaction_id, new Date().toISOString(), payment.id)
+      }
+      this.sms.markPackagePaid(payment.package_order_id, { transactionId: transaction.transaction_id, amountCents: payment.order_amount, reference: transaction.transaction_id })
+      return { paid: true, smsPackage: true, orderId: payment.package_order_id }
+    })
   }
 }
 

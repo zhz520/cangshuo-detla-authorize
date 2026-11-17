@@ -18,6 +18,7 @@ test('usage balance reserves once and settles idempotently', () => {
   const { store, instance, billing } = setup()
   try {
     billing.credit(instance, 1000, 'test-credit', 'owner')
+    billing.saveAccount(instance, { billingMode: 'METERED', unitPriceCents: 300 }, 'owner')
     const first = billing.reserve(instance, 'req-1', 'subject-1', 300)
     const duplicate = billing.reserve(instance, 'req-1', 'subject-1', 300)
     assert.equal(first.created, true)

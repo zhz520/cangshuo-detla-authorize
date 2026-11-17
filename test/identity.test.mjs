@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { generateKeyPairSync, randomUUID } from 'node:crypto'
+import { createHash, generateKeyPairSync, randomUUID } from 'node:crypto'
 import { AuthorityStore } from '../server/store.mjs'
 import { UsageBilling } from '../server/usage.mjs'
 import { IdentityVerificationService, validateIdNumber } from '../server/identity.mjs'
@@ -18,7 +18,7 @@ function setup() {
     validFrom: new Date(Date.now() - 60000).toISOString(),
     validUntil: '2028-01-01T00:00:00.000Z'
   }, 'owner')
-  return { store, instance, license: store.management.identity(instance, 'owner'), billing: new UsageBilling(store) }
+  return { store, instance, license: store.management.reconcileLicense(instance), billing: new UsageBilling(store) }
 }
 
 test('identity verification charges once and replays the result without a second charge', async () => {
@@ -79,7 +79,7 @@ test('identity request is rejected when the instance lacks the paid entitlement'
   } finally { store.close() }
 })
 
-test('a concurrent reservation is rejected while a stale reservation can be safely retried', async () => {
+test('concurrent and stale reservations do not call the provider a second time', async () => {
   const { store, instance, license, billing } = setup()
   try {
     billing.credit(instance, 500, 'test-credit', 'owner')
@@ -88,16 +88,15 @@ test('a concurrent reservation is rejected while a stale reservation can be safe
       { configured: () => true, verify: async () => { calls++; return { matched: true, reference: 'provider-3' } } },
       { priceCents: 100, subjectPepper: 'test-pepper' })
     const body = { license, version: '1.15.0', idempotencyKey: 'identity-request-0004', realName: '赵六', idNumber: '11010519491231002X' }
-    billing.reserve(instance, body.idempotencyKey, 'subject-4', 100)
+    billing.reserve(instance, body.idempotencyKey, createHash('sha256').update('test-pepper:赵六:11010519491231002X').digest('hex'), 100)
 
     await assert.rejects(() => service.verify(body), /正在处理中/)
     assert.equal(calls, 0)
     store.db.prepare('UPDATE verification_requests SET updated_at=? WHERE idempotency_key=?').run(new Date(Date.now() - 120000).toISOString(), body.idempotencyKey)
-    const retried = await service.verify(body)
-    assert.equal(retried.matched, true)
-    assert.equal(calls, 1)
-    assert.equal(billing.ensure(instance).balance_cents, 400)
-    assert.equal(billing.ensure(instance).reserved_cents, 0)
+    await assert.rejects(() => service.verify(body), /正在处理中/)
+    assert.equal(calls, 0)
+    assert.equal(billing.ensure(instance).balance_cents, 500)
+    assert.equal(billing.ensure(instance).reserved_cents, 100)
   } finally { store.close() }
 })
 

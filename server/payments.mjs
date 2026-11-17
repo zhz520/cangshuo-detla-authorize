@@ -21,7 +21,7 @@ function staleUnpaidCheckout(order, module, instance, productId) {
 
 export class PaymentService {
   constructor(store, { fetcher = fetch, qr = QRCode, sms = null } = {}) {
-    this.store = store; this.fetcher = fetcher; this.qr = qr; this.sms = sms; this.smsPackagePayments = null
+    this.store = store; this.fetcher = fetcher; this.qr = qr; this.sms = sms; this.smsPackagePayments = null; this.identityPackagePayments = null
     this.platformCertificates = new Map(); this.certificateExpiresAt = 0; this.certificateLoading = null
   }
 
@@ -205,6 +205,10 @@ export class PaymentService {
     if (this.smsPackagePayments) {
       const smsResult = await this.smsPackagePayments.notification(transaction, config)
       if (smsResult) return smsResult
+    }
+    if (this.identityPackagePayments) {
+      const identityResult = await this.identityPackagePayments.notification(transaction, config)
+      if (identityResult) return identityResult
     }
     const payment = this.store.db.prepare('SELECT p.*,o.amount_cents AS order_amount,m.name FROM online_payments p JOIN orders o ON o.id=p.order_id JOIN modules m ON m.id=o.module_id WHERE p.out_trade_no=?').get(transaction.out_trade_no)
     if (!payment) fail('微信支付通知对应的订单不存在', 404)

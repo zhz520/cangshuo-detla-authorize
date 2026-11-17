@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs'
+import { lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import path from 'node:path'
 import { AuthorityStore } from './store.mjs'
 import { createAuthorityServer } from './http.mjs'
@@ -7,6 +8,15 @@ import { Mailer } from './mail.mjs'
 const envPath = process.env.AUTHORITY_ENV_FILE || '.env.local'
 try { process.loadEnvFile(envPath) } catch (error) { if (error.code !== 'ENOENT') throw error }
 const data = path.resolve(process.env.DATA_DIR || '.local')
+if (!process.env.AUTHORITY_SMS_MASTER_KEY?.trim()) {
+  const keyFile = path.join(data, 'service-vault.key')
+  mkdirSync(data, { recursive:true, mode:0o700 })
+  try { writeFileSync(keyFile, randomBytes(32).toString('base64') + '\n', { flag: 'wx', mode: 0o600 }) }
+  catch (error) { if (error.code !== 'EEXIST') throw error }
+  const savedKey=lstatSync(keyFile)
+  if(!savedKey.isFile() || (process.platform!=='win32' && (savedKey.mode & 0o077)!==0)) throw new Error('service vault key permissions invalid')
+  process.env.AUTHORITY_SMS_MASTER_KEY = readFileSync(keyFile, 'utf8').trim()
+}
 const store = new AuthorityStore({ database: path.join(data, 'authority.sqlite'), privateKey: readFileSync(process.env.AUTHORITY_PRIVATE_KEY || path.join(data, 'license-private.pem'), 'utf8'), ownerUsername: process.env.OWNER_USERNAME, ownerPassword: process.env.OWNER_PASSWORD })
 const allowedOrigins = String(process.env.AUTHORITY_ALLOWED_ORIGINS || '').split(',').map(value => value.trim()).filter(Boolean)
 const server = createAuthorityServer(store, { secureCookie: process.env.COOKIE_SECURE === 'true', staticDirectory: path.resolve('dist'), allowedOrigins })

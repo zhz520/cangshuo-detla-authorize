@@ -22,7 +22,7 @@ const number = (value, fallback = 0) => {
   return Number.isSafeInteger(parsed) ? parsed : fallback
 }
 
-function keyBytes(value) {
+export function keyBytes(value) {
   if (value == null || String(value).trim() === '') return null
   const raw = String(value).trim()
   const bytes = /^[a-f0-9]{64}$/i.test(raw) ? Buffer.from(raw, 'hex') : Buffer.from(raw, 'base64')
@@ -30,7 +30,7 @@ function keyBytes(value) {
   return bytes
 }
 
-function seal(value, key) {
+export function seal(value, key) {
   if (!key) throw new Error('SMS_MASTER_KEY_MISSING')
   const iv = randomBytes(12)
   const cipher = createCipheriv('aes-256-gcm', key, iv)
@@ -38,7 +38,7 @@ function seal(value, key) {
   return [iv.toString('base64'), cipher.getAuthTag().toString('base64'), ciphertext.toString('base64')].join('.')
 }
 
-function open(value, key) {
+export function open(value, key) {
   if (!value) return ''
   if (!key) throw new Error('SMS_MASTER_KEY_MISSING')
   const parts = String(value).split('.')
@@ -76,6 +76,7 @@ export class SmsService {
     provider = null,
     masterKey = process.env.AUTHORITY_SMS_MASTER_KEY || '',
     phoneHashKey = process.env.AUTHORITY_SMS_PHONE_HASH_KEY || '',
+    receiptKey = process.env.AUTHORITY_SMS_RECEIPT_KEY || '',
     defaultMode = process.env.SMS_DEFAULT_MODE || 'HYBRID',
     defaultPriceCents = Number(process.env.SMS_DEFAULT_PRICE_CENTS || '5'),
     now = stamp
@@ -84,6 +85,7 @@ export class SmsService {
     this.db = store.db
     this.provider = provider || new AliyunSmsProvider()
     this.masterKey = keyBytes(masterKey)
+    this.fallbackReceiptKey = keyBytes(receiptKey)
     this.phoneHashKey = phone => createHmac('sha256', String(phoneHashKey || masterKey || 'sms-phone-hash-local')).update(String(phone)).digest('hex')
     this.defaultMode = MODES.has(defaultMode) ? defaultMode : 'HYBRID'
     this.defaultPriceCents = Number.isSafeInteger(defaultPriceCents) && defaultPriceCents >= 0 ? defaultPriceCents : 5
@@ -121,8 +123,15 @@ export class SmsService {
     return {
       endpoint: row.endpoint, accessKeyId: row.access_key_id, defaultSignName: row.default_sign_name,
       enabled: row.enabled === 1, timeoutMs: row.timeout_ms, hasSecret: Boolean(row.access_key_secret_cipher),
-      masterKeyConfigured: Boolean(this.masterKey)
+      masterKeyConfigured: Boolean(this.masterKey),
+      receiptConfigured: Boolean(this.receiptKey),
+      receiptSaved: Boolean(row.receipt_secret_cipher)
     }
+  }
+
+  get receiptKey() {
+    const cipher = this.settingsRaw().receipt_secret_cipher
+    return cipher ? keyBytes(open(cipher, this.masterKey)) : this.fallbackReceiptKey
   }
 
   saveSettings(body = {}, actor = 'owner') {
@@ -133,16 +142,25 @@ export class SmsService {
     const defaultSignName = optionalText(body.defaultSignName == null ? current.default_sign_name : body.defaultSignName, '短信签名', 120)
     const timeoutMs = Math.max(1000, Math.min(30000, number(body.timeoutMs, current.timeout_ms)))
     let cipher = current.access_key_secret_cipher
+    let receiptCipher = current.receipt_secret_cipher || ''
+    if (body.receiptKey != null && String(body.receiptKey).trim() !== '') {
+      if (!this.masterKey) fail('系统加密密钥未就绪', 503)
+      const candidate = optionalText(body.receiptKey, '回执签名密钥', 128)
+      let key
+      try { key = keyBytes(candidate) } catch { fail('回执签名密钥须为 32 字节的 Base64 或 64 位十六进制') }
+      receiptCipher = seal(key.toString('base64'), this.masterKey)
+    }
     if (body.accessKeySecret != null && String(body.accessKeySecret).trim() !== '') {
       if (!this.masterKey) fail('未配置 AUTHORITY_SMS_MASTER_KEY，不能保存阿里云 Secret', 503)
       cipher = seal(optionalText(body.accessKeySecret, 'AccessKey Secret', 500), this.masterKey)
     }
     const enabled = body.enabled === true
     if (enabled && (!accessKeyId || !cipher || !defaultSignName)) fail('启用短信服务前请填写 AccessKey ID、Secret 和短信签名')
+    if (enabled && !receiptCipher && !this.fallbackReceiptKey) fail('启用短信服务前请填写回执签名密钥')
     this.store.transaction(() => {
-      this.db.prepare('UPDATE sms_provider_settings SET endpoint=?,access_key_id=?,access_key_secret_cipher=?,default_sign_name=?,enabled=?,timeout_ms=?,updated_at=? WHERE id=1')
-        .run(endpoint, accessKeyId, cipher, defaultSignName, enabled ? 1 : 0, timeoutMs, this.now())
-      this.store.audit(actor, 'UPDATE_SMS_SETTINGS', 'aliyun', { enabled, hasSecret: Boolean(cipher), endpoint })
+      this.db.prepare('UPDATE sms_provider_settings SET endpoint=?,access_key_id=?,access_key_secret_cipher=?,default_sign_name=?,enabled=?,timeout_ms=?,receipt_secret_cipher=?,updated_at=? WHERE id=1')
+        .run(endpoint, accessKeyId, cipher, defaultSignName, enabled ? 1 : 0, timeoutMs, receiptCipher, this.now())
+      this.store.audit(actor, 'UPDATE_SMS_SETTINGS', 'aliyun', { enabled, hasSecret: Boolean(cipher), hasReceipt: Boolean(receiptCipher || this.fallbackReceiptKey), endpoint })
     })
     return this.settings()
   }
@@ -248,11 +266,14 @@ export class SmsService {
     if (!Number.isSafeInteger(amountCents) || amountCents <= 0) fail('充值金额必须为正整数分')
     this.ensureAccount(id)
     return this.store.transaction(() => {
+      const note = optionalText(reference, '充值引用', 128)
+      if (note && this.db.prepare("SELECT id FROM sms_ledger WHERE project_id=? AND type='CREDIT' AND note=?").get(id, note))
+        fail('该充值引用已经入账，请勿重复提交', 409)
       const wallet = this.db.prepare('SELECT * FROM sms_wallets WHERE project_id=?').get(id)
       const balance = wallet.balance_cents + amountCents
       this.db.prepare('UPDATE sms_wallets SET balance_cents=?,updated_at=? WHERE project_id=?').run(balance, this.now(), id)
       this.db.prepare('INSERT INTO sms_ledger(id,project_id,type,amount_cents,balance_after_cents,operator,note,created_at) VALUES (?,?,?,?,?,?,?,?)')
-        .run(randomUUID(), id, 'CREDIT', amountCents, balance, actor, optionalText(reference, '充值引用', 128), this.now())
+        .run(randomUUID(), id, 'CREDIT', amountCents, balance, actor, note, this.now())
       this.store.audit(actor, 'SMS_CREDIT', id, { amountCents })
       this.notifyLowBalance(id, balance, this.ensureAccount(id))
       return { projectId: id, balanceCents: balance }
@@ -275,6 +296,9 @@ export class SmsService {
       const id = randomUUID()
       this.db.prepare('INSERT INTO sms_package_balances(id,project_id,package_product_id,total_count,remaining_count,reserved_count,valid_from,valid_until,status,source_type,source_order_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
         .run(id, pid, product.id, product.message_count, product.message_count, 0, start.toISOString(), end.toISOString(), 'ACTIVE', sourceOrderId ? 'PURCHASE' : 'MANUAL', sourceOrderId, start.toISOString(), start.toISOString())
+      const wallet = this.db.prepare('SELECT balance_cents FROM sms_wallets WHERE project_id=?').get(pid)
+      this.db.prepare('INSERT INTO sms_ledger(id,project_id,type,amount_cents,balance_after_cents,package_balance_id,operator,note,created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+        .run(randomUUID(), pid, 'PACKAGE_GRANT', 0, Number(wallet?.balance_cents || 0), id, actor, String(sourceOrderId || product.code).slice(0, 128), this.now())
       this.store.audit(actor, 'SMS_PACKAGE_GRANT', pid, { packageId: product.id, messageCount: product.message_count, sourceOrderId })
       return { id, remainingCount: product.message_count, validUntil: end.toISOString() }
     })
@@ -294,13 +318,14 @@ export class SmsService {
     const existing = this.db.prepare("SELECT * FROM sms_package_orders WHERE project_id=? AND package_product_id=? AND status='UNPAID' ORDER BY created_at DESC LIMIT 1").get(instance.project_id, product.id)
     if (existing) return { ...existing, product }
     const id = randomUUID()
-    this.db.prepare('INSERT INTO sms_package_orders(id,project_id,package_product_id,amount_cents,status,created_at) VALUES (?,?,?,?,?,?)').run(id, instance.project_id, product.id, product.price_cents, 'UNPAID', this.now())
+    this.db.prepare('INSERT INTO sms_package_orders(id,project_id,package_product_id,package_name,message_count,validity_days,amount_cents,status,created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+      .run(id, instance.project_id, product.id, product.name, product.message_count, product.validity_days, product.price_cents, 'UNPAID', this.now())
     this.store.audit(actor, 'SMS_PACKAGE_ORDER', id, { projectId: instance.project_id, packageId: product.id, amountCents: product.price_cents })
     return { ...this.db.prepare('SELECT * FROM sms_package_orders WHERE id=?').get(id), product }
   }
 
   packageOrder(orderId) {
-    return this.db.prepare('SELECT o.*,p.code,p.name AS package_name,p.message_count,p.validity_days,p.price_cents,c.name AS customer_name,pr.name AS project_name FROM sms_package_orders o JOIN sms_package_products p ON p.id=o.package_product_id JOIN projects pr ON pr.id=o.project_id JOIN customers c ON c.id=pr.customer_id WHERE o.id=?').get(orderId)
+    return this.db.prepare('SELECT o.*,p.code,c.name AS customer_name,pr.name AS project_name FROM sms_package_orders o LEFT JOIN sms_package_products p ON p.id=o.package_product_id JOIN projects pr ON pr.id=o.project_id JOIN customers c ON c.id=pr.customer_id WHERE o.id=?').get(orderId)
   }
 
   markPackagePaid(orderId, { transactionId, amountCents, reference } = {}) {
@@ -312,7 +337,21 @@ export class SmsService {
       if (Number(amountCents) !== Number(order.amount_cents)) fail('套餐支付金额不匹配', 409)
       const time = this.now()
       this.db.prepare("UPDATE sms_package_orders SET status='PAID',payment_reference=?,paid_at=? WHERE id=?").run(String(reference || transactionId || '').slice(0, 128), time, orderId)
-      const grant = this.grantPackage(order.project_id, order.package_product_id, 'system', orderId)
+      const existing = this.db.prepare('SELECT * FROM sms_package_balances WHERE source_order_id=?').get(orderId)
+      let grant
+      if (existing) {
+        grant = { id: existing.id, remainingCount: existing.remaining_count, validUntil: existing.valid_until, idempotent: true }
+      } else {
+        const start = new Date()
+        const end = new Date(start.getTime() + Number(order.validity_days) * 86400000)
+        const balanceId = randomUUID()
+        this.db.prepare('INSERT INTO sms_package_balances(id,project_id,package_product_id,total_count,remaining_count,reserved_count,valid_from,valid_until,status,source_type,source_order_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
+          .run(balanceId, order.project_id, order.package_product_id, order.message_count, order.message_count, 0, start.toISOString(), end.toISOString(), 'ACTIVE', 'PURCHASE', orderId, start.toISOString(), start.toISOString())
+        const wallet = this.db.prepare('SELECT balance_cents FROM sms_wallets WHERE project_id=?').get(order.project_id)
+        this.db.prepare('INSERT INTO sms_ledger(id,project_id,type,amount_cents,balance_after_cents,package_balance_id,operator,note,created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+          .run(randomUUID(), order.project_id, 'PACKAGE_GRANT', 0, Number(wallet?.balance_cents || 0), balanceId, 'system', orderId, time)
+        grant = { id: balanceId, remainingCount: order.message_count, validUntil: end.toISOString() }
+      }
       this.db.prepare("UPDATE sms_package_orders SET status='GRANTED',granted_at=? WHERE id=?").run(time, orderId)
       this.store.audit('system', 'SMS_PACKAGE_PAID', orderId, { transactionId: String(transactionId || '').slice(0, 80), amountCents })
       return { order: this.packageOrder(orderId), grant }
@@ -320,7 +359,7 @@ export class SmsService {
   }
 
   activePackages(projectId, units) {
-    return this.db.prepare("SELECT b.* FROM sms_package_balances b JOIN sms_package_products p ON p.id=b.package_product_id WHERE b.project_id=? AND b.status='ACTIVE' AND p.status='ACTIVE' AND b.valid_from<=? AND b.valid_until>? AND b.remaining_count-b.reserved_count>=? ORDER BY b.valid_until,b.created_at LIMIT 10")
+    return this.db.prepare("SELECT b.* FROM sms_package_balances b WHERE b.project_id=? AND b.status='ACTIVE' AND b.valid_from<=? AND b.valid_until>? AND b.remaining_count-b.reserved_count>=? ORDER BY b.valid_until,b.created_at LIMIT 10")
       .all(projectId, this.now(), this.now(), units)
   }
 
@@ -369,7 +408,7 @@ export class SmsService {
     const now = new Date()
     const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString()
     const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString()
-    const count = start => this.db.prepare("SELECT COUNT(*) AS count FROM sms_requests WHERE project_id=? AND status IN ('ACCEPTED','UNKNOWN') AND created_at>=?")
+    const count = start => this.db.prepare("SELECT COUNT(*) AS count FROM sms_requests WHERE project_id=? AND status IN ('RESERVED','ACCEPTED','DELIVERED','UNKNOWN') AND created_at>=?")
       .get(account.project_id, start).count
     if (daily && count(dayStart) >= daily) fail('短信每日发送上限已达到', 429)
     if (monthly && count(monthStart) >= monthly) fail('短信每月发送上限已达到', 429)
@@ -388,15 +427,20 @@ export class SmsService {
     const instance = this.instanceProject(text(instanceId, '实例编号', 36))
     const account = this.ensureAccount(instance.project_id)
     if (account.enabled !== 1) fail('短信服务账户已停用', 403)
-    this.checkLimits(account)
     const template = this.templateForSend(body.templateKey)
     const phone = text(body.phone, '手机号', 20).replace(/\s+/g, '')
     if (!PHONE.test(phone)) fail('手机号格式不正确')
     const variables = this.validateVariables(template, body.variables)
     const key = optionalText(requestKey || body.requestKey, '幂等键', 128)
     if (!KEY.test(key)) fail('幂等键格式不正确')
+    if (!this.receiptKey) fail('短信回执渠道尚未配置', 503)
+    const digest = 'hmac:' + createHmac('sha256', this.masterKey || this.receiptKey).update(JSON.stringify(variables)).digest('hex')
+    const phoneHash = this.phoneHashKey(phone)
     const existing = this.db.prepare('SELECT * FROM sms_requests WHERE instance_id=? AND request_key=?').get(instance.instance_id, key)
     if (existing) {
+      if (existing.phone_hash !== phoneHash || existing.template_id !== template.id ||
+          (existing.variables_digest.startsWith('hmac:') && existing.variables_digest !== digest))
+        fail('短信幂等键已被其他请求使用', 409)
       if (existing.status === 'RESERVED' && Date.now() - Date.parse(existing.updated_at) > 60000) this.markUnknown(existing.id, 'SMS_STALE_RESERVATION')
       return this.publicRequest(this.db.prepare('SELECT * FROM sms_requests WHERE id=?').get(existing.id))
     }
@@ -423,6 +467,7 @@ export class SmsService {
     const requestId = randomUUID()
     const time = this.now()
     this.store.transaction(() => {
+      this.checkLimits(account)
       if (billable && packageRow) {
         const changed = this.db.prepare("UPDATE sms_package_balances SET reserved_count=reserved_count+?,updated_at=? WHERE id=? AND remaining_count-reserved_count>=? AND status='ACTIVE'")
           .run(units, time, packageRow.id, units).changes
@@ -433,13 +478,13 @@ export class SmsService {
         if (!changed) fail('短信余额不足，请联系平台充值', 409)
       }
       this.db.prepare('INSERT INTO sms_requests(id,instance_id,project_id,request_key,template_id,scene,phone_hash,phone_masked,variables_digest,billing_mode,billing_status,billing_units,unit_price_cents,charge_cents,package_balance_id,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-        .run(requestId, instance.instance_id, instance.project_id, key, template.id, template.scene, this.phoneHashKey(phone), maskPhone(phone), sha256(JSON.stringify(variables)), billingMode, 'RESERVED', units, price, charge, packageRow?.id || null, 'RESERVED', time, time)
+        .run(requestId, instance.instance_id, instance.project_id, key, template.id, template.scene, phoneHash, maskPhone(phone), digest, billingMode, 'RESERVED', units, price, charge, packageRow?.id || null, 'RESERVED', time, time)
     })
     let result
     try {
       result = await this.provider.send({
         endpoint: provider.endpoint, accessKeyId: provider.access_key_id, accessKeySecret: provider.accessKeySecret,
-        signName: template.sign_name || provider.default_sign_name, templateCode: template.provider_template_code, phone, variables, timeoutMs: provider.timeout_ms
+        signName: template.sign_name || provider.default_sign_name, templateCode: template.provider_template_code, phone, outId: requestId, variables, timeoutMs: provider.timeout_ms
       })
     } catch (error) {
       if (error instanceof SmsProviderUncertain) {
@@ -453,13 +498,44 @@ export class SmsService {
       this.release(requestId, result.code || 'SMS_PROVIDER_REJECTED')
       return this.publicRequest(this.db.prepare('SELECT * FROM sms_requests WHERE id=?').get(requestId))
     }
-    return this.settleAccepted(requestId, result)
+    this.db.prepare("UPDATE sms_requests SET status='ACCEPTED',provider_request_id=?,provider_message_id=?,updated_at=? WHERE id=? AND status IN ('RESERVED','UNKNOWN')")
+      .run(result.requestId || '', result.bizId || '', this.now(), requestId)
+    return this.publicRequest(this.db.prepare('SELECT * FROM sms_requests WHERE id=?').get(requestId))
   }
 
-  settleAccepted(requestId, result) {
+  verifyReceipt(headers, rawBody) {
+    if (!this.receiptKey) fail('短信回执渠道尚未配置', 503)
+    const timestamp = String(headers['x-sms-receipt-timestamp'] || '')
+    const signature = String(headers['x-sms-receipt-signature'] || '')
+    if (!/^[0-9]{13}$/.test(timestamp) || Math.abs(Date.now() - Number(timestamp)) > 300000 || !/^[a-f0-9]{64}$/i.test(signature))
+      fail('短信回执认证失败', 401)
+    const expected = createHmac('sha256', this.receiptKey).update(timestamp + '\n' + rawBody).digest()
+    if (!timingSafeEqual(expected, Buffer.from(signature, 'hex'))) fail('短信回执认证失败', 401)
+  }
+
+  applyReceipts(reports) {
+    if (!Array.isArray(reports) || reports.length > 300) fail('短信回执格式无效', 400)
+    const ready = new Map()
+    for (const report of reports) {
+      const id = String(report?.out_id || ''), bizId = String(report?.biz_id || '')
+      if (!/^[0-9a-f-]{36}$/.test(id) || !bizId || bizId.length > 120 || typeof report.success !== 'boolean') continue
+      const request = this.db.prepare('SELECT * FROM sms_requests WHERE id=?').get(id)
+      if (!request || request.billing_status !== 'RESERVED' || !['RESERVED','ACCEPTED','UNKNOWN'].includes(request.status)) continue
+      if (request.provider_message_id && request.provider_message_id !== bizId) continue
+      if (!ready.has(id)) ready.set(id, { id, bizId, success: report.success })
+    }
+    for (const report of ready.values()) {
+      if (report.success) this.settleDelivered(report.id, report.bizId)
+      else this.release(report.id, 'SMS_DELIVERY_FAILED')
+    }
+    return { processed: ready.size }
+  }
+
+  settleDelivered(requestId, bizId) {
     return this.store.transaction(() => {
       const request = this.db.prepare('SELECT * FROM sms_requests WHERE id=?').get(requestId)
-      if (!request || request.status !== 'RESERVED') return this.publicRequest(request)
+      if (!request || request.billing_status !== 'RESERVED' || !['RESERVED','ACCEPTED','UNKNOWN'].includes(request.status)) return this.publicRequest(request)
+      if (request.provider_message_id && request.provider_message_id !== bizId) return this.publicRequest(request)
       const time = this.now()
       if (request.billing_status === 'RESERVED' && request.package_balance_id) {
         const changed = this.db.prepare('UPDATE sms_package_balances SET remaining_count=remaining_count-?,reserved_count=reserved_count-?,updated_at=? WHERE id=? AND remaining_count>=? AND reserved_count>=?')
@@ -467,6 +543,9 @@ export class SmsService {
         if (!changed) throw new Error('SMS_PACKAGE_RESERVATION_BROKEN')
         const pkg = this.db.prepare('SELECT remaining_count,reserved_count FROM sms_package_balances WHERE id=?').get(request.package_balance_id)
         if (pkg && pkg.remaining_count - pkg.reserved_count <= 0) this.notifyPackageEmpty(request.project_id, request.package_balance_id)
+        const wallet = this.db.prepare('SELECT balance_cents FROM sms_wallets WHERE project_id=?').get(request.project_id)
+        this.db.prepare('INSERT INTO sms_ledger(id,project_id,instance_id,request_id,type,amount_cents,balance_after_cents,package_balance_id,operator,note,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+          .run(randomUUID(), request.project_id, request.instance_id, request.id, 'PACKAGE_CHARGE', 0, Number(wallet?.balance_cents || 0), request.package_balance_id, 'system', '短信套餐消耗', time)
       } else if (request.billing_status === 'RESERVED' && request.billing_mode === 'METERED') {
         const wallet = this.db.prepare('SELECT * FROM sms_wallets WHERE project_id=?').get(request.project_id)
         const balance = wallet.balance_cents - request.charge_cents
@@ -477,8 +556,8 @@ export class SmsService {
           .run(randomUUID(), request.project_id, request.instance_id, request.id, 'CHARGE', request.charge_cents, balance, 'system', '短信发送成功', time)
         this.notifyLowBalance(request.project_id, balance, this.ensureAccount(request.project_id))
       }
-      this.db.prepare("UPDATE sms_requests SET status='ACCEPTED',billing_status=?,provider_request_id=?,provider_message_id=?,completed_at=?,updated_at=? WHERE id=?")
-        .run(request.billing_mode === 'FREE' ? 'FREE' : 'CHARGED', result?.requestId || '', result?.bizId || '', time, time, request.id)
+      this.db.prepare("UPDATE sms_requests SET status='DELIVERED',billing_status=?,provider_message_id=?,completed_at=?,updated_at=? WHERE id=?")
+        .run(request.billing_mode === 'FREE' ? 'FREE' : 'CHARGED', bizId, time, time, request.id)
       return this.publicRequest(this.db.prepare('SELECT * FROM sms_requests WHERE id=?').get(requestId))
     })
   }
@@ -486,7 +565,7 @@ export class SmsService {
   release(requestId, errorCode = 'SMS_FAILED') {
     return this.store.transaction(() => {
       const request = this.db.prepare('SELECT * FROM sms_requests WHERE id=?').get(requestId)
-      if (!request || !['RESERVED', 'UNKNOWN'].includes(request.status)) return this.publicRequest(request)
+      if (!request || request.billing_status !== 'RESERVED' || !['RESERVED', 'UNKNOWN', 'ACCEPTED'].includes(request.status)) return this.publicRequest(request)
       const time = this.now()
       if (request.package_balance_id) this.db.prepare('UPDATE sms_package_balances SET reserved_count=MAX(0,reserved_count-?),updated_at=? WHERE id=?').run(request.billing_units, time, request.package_balance_id)
       else if (request.billing_mode === 'METERED') this.db.prepare('UPDATE sms_wallets SET reserved_cents=MAX(0,reserved_cents-?),updated_at=? WHERE project_id=?').run(request.charge_cents, time, request.project_id)
@@ -512,8 +591,10 @@ export class SmsService {
     const wallet = this.db.prepare('SELECT * FROM sms_wallets WHERE project_id=?').get(instance.project_id)
     const packages = this.db.prepare('SELECT b.id,p.name,b.remaining_count-b.reserved_count AS remaining_count,b.valid_until FROM sms_package_balances b JOIN sms_package_products p ON p.id=b.package_product_id WHERE b.project_id=? AND b.status=\'ACTIVE\' AND b.valid_until>? ORDER BY b.valid_until,b.created_at').all(instance.project_id, this.now())
     const templates = this.db.prepare("SELECT template_key,name,scene,min_client_version FROM sms_templates WHERE status='ACTIVE' ORDER BY template_key").all()
+    const usage = this.usageSummary(instance.project_id)
     return { instanceId: instance.instance_id, projectId: instance.project_id, billingMode: account.billing_mode, unitPriceCents: account.unit_price_cents,
-      balanceCents: wallet?.balance_cents || 0, reservedCents: wallet?.reserved_cents || 0, dailyLimit: account.daily_limit, monthlyLimit: account.monthly_limit, packages, templates,
+      balanceCents: wallet?.balance_cents || 0, reservedCents: wallet?.reserved_cents || 0, dailyLimit: account.daily_limit, monthlyLimit: account.monthly_limit,
+      ready: account.enabled === 1 && this.settingsRaw().enabled === 1 && Boolean(this.receiptKey && this.masterKey), packages, templates, usage,
       availablePackages: this.availablePackages(instanceId) }
   }
 
@@ -528,13 +609,15 @@ export class SmsService {
     const timestamp = optionalText(headers['x-sms-timestamp'], '短信时间戳', 20)
     const nonce = optionalText(headers['x-sms-nonce'], '短信随机数', 128)
     const signature = optionalText(headers['x-sms-signature'], '短信签名', 128)
+    const idempotencyKey = optionalText(headers['idempotency-key'] || '', '短信幂等键', 128)
     if (!instanceId || !timestamp || !nonce || !signature) fail('短信请求认证失败', 401)
     if (!/^[0-9]{13}$/.test(timestamp) || Math.abs(Date.now() - Number(timestamp)) > 300000) fail('短信请求已过期', 401)
-    if (!/^[A-Za-z0-9:_-]{8,128}$/.test(nonce) || !/^[a-f0-9]{64}$/i.test(signature)) fail('短信请求认证失败', 401)
+    if (!/^[A-Za-z0-9:_-]{8,128}$/.test(nonce)) fail('短信请求认证失败', 401)
     if (body.instanceId && String(body.instanceId) !== instanceId) fail('短信请求实例不一致', 403)
+    if (!/^[a-f0-9]{64}$/i.test(signature)) fail('短信请求认证失败', 401)
     const credential = this.db.prepare("SELECT * FROM sms_client_credentials WHERE instance_id=? AND status='ACTIVE'").get(instanceId)
     if (!credential) fail('短信接入凭据不存在', 401)
-    const message = [method, path, timestamp, nonce, sha256(rawBody || '')].join(String.fromCharCode(10))
+    const message = [method, path, timestamp, nonce, idempotencyKey, sha256(rawBody || '')].join(String.fromCharCode(10))
     if (!this.masterKey) fail('短信服务密钥未配置', 503)
     let clientSecret
     try { clientSecret = open(credential.secret_cipher, this.masterKey) }
@@ -542,8 +625,20 @@ export class SmsService {
     const expected = createHmac('sha256', clientSecret).update(message).digest('hex')
     const left = Buffer.from(expected, 'hex'), right = Buffer.from(signature.toLowerCase(), 'hex')
     if (left.length !== right.length || !timingSafeEqual(left, right)) fail('短信请求认证失败', 401)
+    this.consumeNonce(instanceId, nonce, Number(timestamp) + 300001)
     this.db.prepare('UPDATE sms_client_credentials SET last_used_at=? WHERE instance_id=?').run(this.now(), instanceId)
     return instanceId
+  }
+
+  consumeNonce(instanceId, nonce, expiresAt) {
+    const now = Date.now()
+    this.db.prepare('DELETE FROM sms_request_nonces WHERE expires_at<=?').run(now)
+    try {
+      this.db.prepare('INSERT INTO sms_request_nonces(instance_id,nonce,expires_at,created_at) VALUES (?,?,?,?)')
+        .run(instanceId, nonce, expiresAt, this.now())
+    } catch {
+      fail('短信请求已使用，请重新发起', 401)
+    }
   }
 
   credentials() {
@@ -563,16 +658,24 @@ export class SmsService {
     return { instanceId: id, secret }
   }
 
+  usageSummary(projectId) {
+    return this.db.prepare("SELECT COUNT(*) AS total_count,COUNT(CASE WHEN status='DELIVERED' THEN 1 END) AS delivered_count,COUNT(CASE WHEN status='FAILED' THEN 1 END) AS failed_count,COUNT(CASE WHEN billing_status='RESERVED' THEN 1 END) AS pending_count,COUNT(CASE WHEN status='ACCEPTED' AND billing_status<>'RESERVED' THEN 1 END) AS legacy_accepted_count,COALESCE(SUM(CASE WHEN billing_status='CHARGED' THEN charge_cents ELSE 0 END),0) AS charged_cents,COALESCE(SUM(CASE WHEN billing_status='CHARGED' AND package_balance_id IS NOT NULL THEN billing_units ELSE 0 END),0) AS package_units FROM sms_requests WHERE (? IS NULL OR project_id=?)").get(projectId || null, projectId || null)
+  }
+
   usage(projectId, limit = 200) {
     const size = Math.max(1, Math.min(number(limit, 200), 500))
-    if (projectId) return this.db.prepare('SELECT r.*,i.name AS instance_name FROM sms_requests r JOIN instances i ON i.id=r.instance_id WHERE r.project_id=? ORDER BY r.created_at DESC LIMIT ?').all(projectId, size)
-    return this.db.prepare('SELECT r.*,i.name AS instance_name FROM sms_requests r JOIN instances i ON i.id=r.instance_id ORDER BY r.created_at DESC LIMIT ?').all(size)
+    const sql = 'SELECT r.id,r.project_id,r.instance_id,r.scene,r.phone_masked,r.status,r.billing_status,r.charge_cents,r.error_code,r.created_at,r.completed_at,i.name AS instance_name FROM sms_requests r JOIN instances i ON i.id=r.instance_id'
+    if (projectId) return this.db.prepare(sql + ' WHERE r.project_id=? ORDER BY r.created_at DESC LIMIT ?').all(projectId, size)
+    return this.db.prepare(sql + ' ORDER BY r.created_at DESC LIMIT ?').all(size)
   }
 
   releaseUnknown(requestId, actor = 'owner') {
     const request = this.db.prepare('SELECT * FROM sms_requests WHERE id=?').get(requestId)
     if (!request) fail('短信请求不存在', 404)
-    if (request.status !== 'UNKNOWN') fail('只有未知结果请求可以释放预占', 409)
+    const pastReceiptDeadline = Date.now() - Date.parse(request.created_at) >= 24 * 3600000
+    if (request.billing_status !== 'RESERVED' || !['ACCEPTED','RESERVED','UNKNOWN'].includes(request.status)
+        || (request.status !== 'UNKNOWN' && !pastReceiptDeadline))
+      fail('只有未知结果或超过 24 小时未收到回执的预占可以释放', 409)
     const released = this.release(requestId, 'SMS_MANUAL_RELEASE_UNKNOWN')
     this.store.audit(actor, 'SMS_RELEASE_UNKNOWN', requestId)
     return released

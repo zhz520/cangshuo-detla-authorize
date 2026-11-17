@@ -27,8 +27,13 @@
               </el-form-item>
               <el-form-item label="默认短信签名"><el-input v-model="settings.defaultSignName" placeholder="例如：KK云电竞" /></el-form-item>
               <el-form-item label="请求超时（毫秒）"><el-input-number v-model="settings.timeoutMs" :min="1000" :max="30000" :step="1000" /></el-form-item>
+              <el-form-item label="回执签名密钥">
+                <el-input v-model="settings.receiptKey" type="password" show-password autocomplete="new-password"
+                  :placeholder="settings.receiptConfigured ? '已配置，留空保留原值' : '32 字节 Base64 或 64 位十六进制'" />
+              </el-form-item>
             </div>
-            <el-alert v-if="!settings.masterKeyConfigured" title="服务器未配置 AUTHORITY_SMS_MASTER_KEY，保存 Secret 和生成客户端凭据会被拒绝。" type="warning" :closable="false" show-icon />
+            <el-alert v-if="!settings.masterKeyConfigured" title="系统加密密钥未就绪，暂时无法保存密钥。" type="warning" :closable="false" show-icon />
+            <el-alert v-else-if="!settings.receiptConfigured" title="填写与阿里云回执转发端一致的签名密钥。收到成功回执后才扣费。" type="info" :closable="false" show-icon />
             <div class="form-actions"><el-button type="primary" :loading="saving" @click="saveSettings">保存接入配置</el-button></div>
           </el-form>
         </el-tab-pane>
@@ -89,15 +94,23 @@
 
         <el-tab-pane label="用量账单" name="usage">
           <div class="table-toolbar"><el-select v-model="usageProject" clearable placeholder="全部项目" @change="loadUsage"><el-option v-for="account in accounts" :key="account.project_id" :value="account.project_id" :label="account.customer_name + ' / ' + account.project_name" /></el-select><el-button :loading="loadingUsage" @click="loadUsage">刷新流水</el-button></div>
+          <div v-if="usageSummary" class="usage-summary">
+            <span>回执发送成功 <b>{{ usageSummary.delivered_count }}</b></span>
+            <span>失败 <b>{{ usageSummary.failed_count }}</b></span>
+            <span>待确认 <b>{{ usageSummary.pending_count }}</b></span>
+            <span>已扣款 <b>{{ money(usageSummary.charged_cents) }}</b></span>
+            <span>套餐消耗 <b>{{ usageSummary.package_units }}</b></span>
+            <span v-if="usageSummary.legacy_accepted_count">旧版仅受理 <b>{{ usageSummary.legacy_accepted_count }}</b></span>
+          </div>
           <el-table :data="usage" stripe>
             <el-table-column label="时间" min-width="165"><template #default="{row}">{{ time(row.created_at) }}</template></el-table-column>
             <el-table-column prop="instance_name" label="实例" min-width="130" />
             <el-table-column prop="scene" label="场景" width="120" />
             <el-table-column prop="phone_masked" label="手机号" width="120" />
-            <el-table-column prop="status" label="状态" width="110" />
-            <el-table-column label="计费" width="130"><template #default="{row}">{{ row.billing_status }} {{ money(row.charge_cents) }}</template></el-table-column>
+            <el-table-column label="状态" width="128"><template #default="{row}">{{ statusLabel(row) }}</template></el-table-column>
+            <el-table-column label="计费" width="130"><template #default="{row}">{{ row.billing_status === 'CHARGED' ? money(row.charge_cents) : row.billing_status === 'RESERVED' ? '待结算' : '未扣款' }}</template></el-table-column>
             <el-table-column prop="error_code" label="错误码" min-width="150" />
-            <el-table-column label="操作" width="110"><template #default="{row}"><el-button v-if="row.status==='UNKNOWN'" link type="warning" @click="releaseUnknown(row)">释放预占</el-button></template></el-table-column>
+            <el-table-column label="操作" width="110"><template #default="{row}"><el-button v-if="canRelease(row)" link type="warning" @click="releaseUnknown(row)">释放预占</el-button></template></el-table-column>
           </el-table>
         </el-tab-pane>
       </el-tabs>
@@ -188,9 +201,10 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 
 const props = defineProps({ api: Function, refresh: Function })
 const loading = ref(false), saving = ref(false), tab = ref('settings')
-const settings = reactive({ enabled: false, endpoint: 'dysmsapi.aliyuncs.com', accessKeyId: '', accessKeySecret: '', defaultSignName: '', timeoutMs: 8000, hasSecret: false, masterKeyConfigured: false })
+const settings = reactive({ enabled: false, endpoint: 'dysmsapi.aliyuncs.com', accessKeyId: '', accessKeySecret: '', receiptKey: '', defaultSignName: '', timeoutMs: 8000, hasSecret: false, masterKeyConfigured: false })
 const templates = ref([]), packages = ref([]), accounts = ref([]), credentials = ref([]), usage = ref([])
-const usageProject = ref(''), loadingUsage = ref(false)
+const usageProject = ref(''), loadingUsage = ref(false), usageSummary = ref(null)
+let usageSequence = 0
 
 const templateVisible = ref(false), templateEditing = ref(false), templateForm = reactive({})
 const templateVariables = ref([])
@@ -203,6 +217,8 @@ const availablePackages = computed(() => packages.value.filter(item => item.stat
 
 const money = cents => '¥' + (Number(cents || 0) / 100).toFixed(2)
 const time = value => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—'
+const statusLabel = row => ({ DELIVERED: '发送成功', ACCEPTED: row.billing_status === 'RESERVED' ? '等待回执' : '旧版仅受理', FAILED: '发送失败', RESERVED: '提交中', UNKNOWN: '待确认' })[row.status] || row.status
+const canRelease = row => row.billing_status === 'RESERVED' && (row.status === 'UNKNOWN' || Date.now() - Date.parse(row.created_at) >= 86400000)
 const modeLabel = mode => ({ METERED: '只按条', PACKAGE: '只套餐', HYBRID: '套餐+按条' })[mode] || mode
 const cents = value => Math.round(Number(value || 0) * 100)
 
@@ -213,7 +229,7 @@ async function load() {
       props.api('/sms/settings'), props.api('/sms/templates'), props.api('/sms/packages'),
       props.api('/sms/accounts'), props.api('/sms/credentials')
     ])
-    Object.assign(settings, s)
+    Object.assign(settings, s, { accessKeySecret: '', receiptKey: '' })
     templates.value = t
     packages.value = p
     accounts.value = a
@@ -223,19 +239,27 @@ async function load() {
   finally { loading.value = false }
 }
 async function loadUsage() {
+  const sequence = ++usageSequence
+  const query = usageProject.value ? '?projectId=' + encodeURIComponent(usageProject.value) : ''
   loadingUsage.value = true
-  try { usage.value = await props.api('/sms/usage' + (usageProject.value ? '?projectId=' + encodeURIComponent(usageProject.value) : '')) }
-  catch (error) { ElMessage.error(error.message) }
-  finally { loadingUsage.value = false }
+  try {
+    const [rows, summary] = await Promise.all([props.api('/sms/usage' + query), props.api('/sms/usage-summary' + query)])
+    if (sequence === usageSequence) { usage.value = rows; usageSummary.value = summary }
+  }
+  catch (error) {
+    if (sequence === usageSequence) { usage.value = []; usageSummary.value = null; ElMessage.error(error.message) }
+  }
+  finally { if (sequence === usageSequence) loadingUsage.value = false }
 }
 async function saveSettings() {
   saving.value = true
   try {
     Object.assign(settings, await props.api('/sms/settings', { method: 'PUT', body: {
       enabled: settings.enabled, endpoint: settings.endpoint, accessKeyId: settings.accessKeyId,
-      accessKeySecret: settings.accessKeySecret, defaultSignName: settings.defaultSignName, timeoutMs: settings.timeoutMs
+      accessKeySecret: settings.accessKeySecret, receiptKey: settings.receiptKey, defaultSignName: settings.defaultSignName, timeoutMs: settings.timeoutMs
     } }))
     settings.accessKeySecret = ''
+    settings.receiptKey = ''
     ElMessage.success('接入配置已保存')
     await props.refresh?.()
   } catch (error) { ElMessage.error(error.message) }
@@ -334,6 +358,7 @@ onMounted(load)
 .form-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:0 22px; }
 .form-actions { display:flex; justify-content:flex-end; margin-top:6px; }
 .table-toolbar { display:flex; align-items:center; justify-content:space-between; gap:14px; margin:8px 0 16px; }
+.usage-summary { display:flex;flex-wrap:wrap;gap:8px 20px;margin-bottom:14px;color:#667085;font-size:13px; }
 .variable-list { width:100%; display:grid; gap:9px; }
 .variable-row { display:grid; grid-template-columns:minmax(0,1fr) 120px 70px auto; align-items:center; gap:10px; }
 .credential-table { margin-top:14px; }

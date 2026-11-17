@@ -21,7 +21,7 @@ export class AliyunSmsProvider {
     this.fetchImpl = fetchImpl
   }
 
-  async send({ endpoint, accessKeyId, accessKeySecret, signName, templateCode, phone, variables = {}, timeoutMs = 8000 }) {
+  async send({ endpoint, accessKeyId, accessKeySecret, signName, templateCode, phone, outId, variables = {}, timeoutMs = 8000 }) {
     if (endpoint && endpoint !== 'dysmsapi.aliyuncs.com') throw new Error('SMS_ENDPOINT_INVALID')
     if (!accessKeyId || !accessKeySecret || !signName || !templateCode) throw new Error('SMS_PROVIDER_NOT_CONFIGURED')
     const params = {
@@ -39,6 +39,7 @@ export class AliyunSmsProvider {
       Timestamp: aliyunTimestamp(),
       Version: API_VERSION
     }
+    if (outId) params.OutId = outId
     const canonical = Object.keys(params).sort()
       .map(key => percentEncode(key) + '=' + percentEncode(params[key]))
       .join('&')
@@ -66,6 +67,7 @@ export class AliyunSmsProvider {
     }
     const code = String(payload?.Code || '')
     if (response.ok && code.toUpperCase() === 'OK') {
+      if (!payload?.BizId) throw new SmsProviderUncertain('SMS_PROVIDER_MISSING_BIZ_ID')
       return {
         accepted: true,
         code: 'OK',
@@ -73,6 +75,7 @@ export class AliyunSmsProvider {
         requestId: String(payload?.RequestId || '')
       }
     }
+    if (response.status >= 500) throw new SmsProviderUncertain('SMS_PROVIDER_UNAVAILABLE')
     return {
       accepted: false,
       code: code || 'SMS_PROVIDER_REJECTED',

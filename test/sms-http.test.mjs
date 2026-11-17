@@ -6,6 +6,7 @@ import { SmsService } from '../server/sms.mjs'
 import { createAuthorityServer } from '../server/http.mjs'
 
 const masterKey = randomBytes(32).toString('base64')
+const receiptKey = randomBytes(32)
 const sha256 = value => createHash('sha256').update(String(value)).digest('hex')
 
 function setup() {
@@ -16,7 +17,7 @@ function setup() {
   const instance = randomUUID()
   store.createInstance({ id: instance, customerId: 'sms-http-customer', projectId: project, name: '短信接口实例', domains: ['sms-http.example.com'] }, 'owner')
   const provider = { calls: 0, send: async () => { provider.calls++; return { accepted: true, bizId: 'biz-http', requestId: 'req-http' } } }
-  const sms = new SmsService(store, { provider, masterKey, phoneHashKey: 'sms-http-phone-key', defaultMode: 'METERED', defaultPriceCents: 5 })
+  const sms = new SmsService(store, { provider, masterKey, receiptKey: receiptKey.toString('base64'), phoneHashKey: 'sms-http-phone-key', defaultMode: 'METERED', defaultPriceCents: 5 })
   sms.saveSettings({ enabled: true, accessKeyId: 'test', accessKeySecret: 'test-secret', defaultSignName: '测试签名' }, 'owner')
   sms.saveTemplate({ templateKey: 'otp_login', name: '登录验证码', scene: 'LOGIN', providerTemplateCode: 'SMS_HTTP', variables: [{ key: 'code', required: true, maxLength: 6 }], status: 'ACTIVE' }, 'owner')
   sms.saveAccount(project, { billingMode: 'METERED', unitPriceCents: 5, dailyLimit: 0, monthlyLimit: 0, lowBalanceCents: 0, enabled: true }, 'owner')
@@ -35,9 +36,9 @@ async function login(base) {
   return { cookie: response.headers.get('set-cookie').split(';')[0], csrf: value.csrf }
 }
 
-function signedHeaders(instance, secret, method, path, raw, nonce = 'nonce-http-test-1') {
+function signedHeaders(instance, secret, method, path, raw, nonce = 'nonce-http-test-1', key = '') {
   const timestamp = String(Date.now())
-  const message = [method, path, timestamp, nonce, sha256(raw)].join(String.fromCharCode(10))
+  const message = [method, path, timestamp, nonce, key, sha256(raw)].join(String.fromCharCode(10))
   return {
     'content-type': 'application/json',
     'x-sms-instance': instance,
@@ -61,13 +62,21 @@ test('SMS admin and signed client routes are wired without an authenticated brow
     const body = { instanceId: fixture.instance, templateKey: 'otp_login', phone: '13800138000', variables: { code: '123456' } }
     const raw = JSON.stringify(body)
     const sendResponse = await fetch(base + '/api/sms/v1/send', {
-      method: 'POST', headers: { ...signedHeaders(fixture.instance, fixture.credential.secret, 'POST', '/api/sms/v1/send', raw), 'idempotency-key': 'sms-key-http-1' },
+      method: 'POST', headers: { ...signedHeaders(fixture.instance, fixture.credential.secret, 'POST', '/api/sms/v1/send', raw, 'nonce-http-test-1', 'sms-key-http-1'), 'idempotency-key': 'sms-key-http-1' },
       body: raw
     })
     assert.equal(sendResponse.status, 200)
     const result = await sendResponse.json()
     assert.equal(result.status, 'ACCEPTED')
-    assert.equal(result.billing.chargedCents, 5)
+    assert.equal(result.billing.chargedCents, 0)
+    const report = JSON.stringify({ reports: [{ out_id: result.requestId, biz_id: 'biz-http', success: true }] })
+    const timestamp = String(Date.now())
+    const reportPath = base + '/api/sms/receipts/aliyun'
+    assert.equal((await fetch(reportPath, { method: 'POST', headers: { 'content-type': 'application/json' }, body: report })).status, 401)
+    const reportHeaders = { 'content-type': 'application/json', 'x-sms-receipt-timestamp': timestamp,
+      'x-sms-receipt-signature': createHmac('sha256', receiptKey).update(timestamp + '\n' + report).digest('hex') }
+    assert.equal((await (await fetch(reportPath, { method: 'POST', headers: reportHeaders, body: report })).json()).processed, 1)
+    assert.equal((await (await fetch(reportPath, { method: 'POST', headers: reportHeaders, body: report })).json()).processed, 0)
 
     const accountPath = '/api/sms/v1/account'
     const accountResponse = await fetch(base + accountPath, { headers: signedHeaders(fixture.instance, fixture.credential.secret, 'GET', accountPath, '', 'nonce-http-test-2') })
@@ -75,7 +84,7 @@ test('SMS admin and signed client routes are wired without an authenticated brow
     assert.equal((await accountResponse.json()).balanceCents, 95)
 
     const replayResponse = await fetch(base + '/api/sms/v1/send', {
-      method: 'POST', headers: { ...signedHeaders(fixture.instance, fixture.credential.secret, 'POST', '/api/sms/v1/send', raw, 'nonce-http-test-3'), 'idempotency-key': 'sms-key-http-1' },
+      method: 'POST', headers: { ...signedHeaders(fixture.instance, fixture.credential.secret, 'POST', '/api/sms/v1/send', raw, 'nonce-http-test-3', 'sms-key-http-1'), 'idempotency-key': 'sms-key-http-1' },
       body: raw
     })
     assert.equal(replayResponse.status, 200)

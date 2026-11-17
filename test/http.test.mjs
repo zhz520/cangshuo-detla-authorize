@@ -27,7 +27,7 @@ test('operations HTTP routes support a complete isolated customer/project/licens
   await call('/api/usage/accounts/'+id+'/credit','POST',{amountCents:1000,reference:'http-test-credit'})
   const usageAccounts=(await call('/api/usage/accounts')).result
   assert.equal(usageAccounts.find(row=>row.instance_id===id).balance_cents,1000)
-  await call('/api/client/identity/verify','POST',{license:identity,version:'1.15.0',idempotencyKey:'http-identity-0001',realName:'张三',idNumber:'11010519491231002X'},503)
+  await call('/api/client/identity/verify','POST',{license:identity,version:'1.15.0',idempotencyKey:'http-identity-0001',realName:'张三',idNumber:'11010519491231002X'},401)
   await call('/api/modules','POST',{id:'http_module',productId:'other',name:'测试功能',description:'接口测试',minVersion:'1.2.0'},201)
   await call('/api/modules/http_module','PUT',{priceCents:100,termDays:365,status:'ACTIVE'})
   await call('/api/modules','POST',{id:'module_crud',productId:'other',name:'增删改查测试',description:'新增',minVersion:'1.2.0',priceCents:10000,status:'ACTIVE'},201)

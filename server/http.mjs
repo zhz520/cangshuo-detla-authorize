@@ -1,5 +1,5 @@
 import { createServer } from 'node:http'
-import { timingSafeEqual } from 'node:crypto'
+import { createHmac, timingSafeEqual } from 'node:crypto'
 import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { HttpError, fail } from './store.mjs'
@@ -8,7 +8,10 @@ import { Mailer } from './mail.mjs'
 import { PaymentService } from './payments.mjs'
 import { Support } from './support.mjs'
 import { UsageBilling } from './usage.mjs'
-import { HttpIdentityProvider, IdentityVerificationService } from './identity.mjs'
+import { IdentityVerificationService } from './identity.mjs'
+import { IdentityProviderSettings } from './identity-provider-settings.mjs'
+import { IdentityPackageService } from './identity-packages.mjs'
+import { IdentityPackagePaymentService } from './identity-payments.mjs'
 import { SmsService } from './sms.mjs'
 import { SmsPackagePaymentService } from './sms-payments.mjs'
 import { Readable,Transform } from 'node:stream'
@@ -30,13 +33,18 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
   payments.smsPackagePayments ||= new SmsPackagePaymentService(store, { sms, payments })
   const mailer = new Mailer(store)
   const usageBilling = new UsageBilling(store)
+  const identityPackages = new IdentityPackageService(store, { billing: usageBilling })
   const identityPriceCents = Number(process.env.IDENTITY_PRICE_CENTS || '100')
+  const identityProvider = new IdentityProviderSettings(store, sms.masterKey, { url: process.env.IDENTITY_PROVIDER_URL, token: process.env.IDENTITY_PROVIDER_TOKEN })
+  const subjectPepper = process.env.IDENTITY_SUBJECT_PEPPER || (sms.masterKey && createHmac('sha256', sms.masterKey).update('identity-subject-v1').digest('hex'))
   const identity = new IdentityVerificationService(
     store,
     usageBilling,
-    new HttpIdentityProvider({ url: process.env.IDENTITY_PROVIDER_URL, token: process.env.IDENTITY_PROVIDER_TOKEN }),
-    { priceCents: identityPriceCents, subjectPepper: process.env.IDENTITY_SUBJECT_PEPPER }
+    identityProvider,
+    { priceCents: identityPriceCents, subjectPepper, packages: identityPackages }
   )
+  payments.identityPackagePayments ||= new IdentityPackagePaymentService(store, { packages: identityPackages, payments })
+  identity.packagePayments = payments.identityPackagePayments
   const attempts = new Map()
   const checkoutAttempts = new Map()
   const trustedOrigins = new Set(allowedOrigins.map(value => { try { const url = new URL(value); if (!['http:','https:'].includes(url.protocol) || url.username || url.password) throw new Error(); return url.origin } catch { fail('后台允许来源配置格式错误') } }))
@@ -129,7 +137,19 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
         return json({...claims,updates:store.management.clientUpdates(productId,body.version,requestBaseUrl(request) || undefined),modules:store.management.clientModules(productId)})
       }
       if(route==='/api/client/update-plan' && method==='POST')return json(store.releaseService.plan(body))
-      if(route==='/api/client/identity/verify' && method==='POST')return json(await identity.verify(body))
+      if (route.startsWith('/api/client/identity/') && method === 'POST') {
+        const caller = sms.verifyClient(request.headers, method, route, rawBody, body)
+        if (identity.client(body).instance.id !== caller) fail('实名请求实例授权不匹配', 403)
+        if (route === '/api/client/identity/verify') return json(await identity.verify(body))
+        if (route === '/api/client/identity/account') return json(identity.account(body))
+        const checkout = route.match(/^\/api\/client\/identity\/packages\/([a-f\d-]{36})\/checkout$/)
+        if (checkout) return json(await identity.createPackageCheckout({ ...body, packageId: checkout[1] }, requestBaseUrl(request)), 201)
+        fail('实名核验接口不存在', 404)
+      }
+      if (route === '/api/sms/receipts/aliyun' && method === 'POST') {
+        sms.verifyReceipt(request.headers, rawBody)
+        return json(sms.applyReceipts(body.reports))
+      }
       if (route.startsWith('/api/sms/v1/')) {
         const instanceId = sms.verifyClient(request.headers, method, route, rawBody, body)
         if (route === '/api/sms/v1/send' && method === 'POST') return json(await sms.send(instanceId, body, request.headers['idempotency-key']))
@@ -143,7 +163,7 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
       }
       let smsPackagePayMatch = route.match(/^\/pay\/sms-package\/([A-Za-z0-9_-]{43})$/)
       if (smsPackagePayMatch && method === 'GET') {
-        response.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; script-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'")
+        response.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; script-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
         response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
         return response.end(await payments.smsPackagePayments.page(smsPackagePayMatch[1]))
       }
@@ -151,6 +171,16 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
       if (smsPackagePayMatch && method === 'GET') return json(payments.smsPackagePayments.summary(smsPackagePayMatch[1]))
       smsPackagePayMatch = route.match(/^\/api\/checkout\/sms-package\/([A-Za-z0-9_-]{43})\/prepay$/)
       if (smsPackagePayMatch && method === 'POST') return json(await payments.smsPackagePayments.prepay(smsPackagePayMatch[1]), 201)
+      let identityPackagePayMatch = route.match(/^\/pay\/identity-package\/([A-Za-z0-9_-]{43})$/)
+      if (identityPackagePayMatch && method === 'GET') {
+        response.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; script-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
+        response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+        return response.end(await payments.identityPackagePayments.page(identityPackagePayMatch[1]))
+      }
+      identityPackagePayMatch = route.match(/^\/api\/checkout\/identity-package\/([A-Za-z0-9_-]{43})$/)
+      if (identityPackagePayMatch && method === 'GET') return json(payments.identityPackagePayments.summary(identityPackagePayMatch[1]))
+      identityPackagePayMatch = route.match(/^\/api\/checkout\/identity-package\/([A-Za-z0-9_-]{43})\/prepay$/)
+      if (identityPackagePayMatch && method === 'POST') return json(await payments.identityPackagePayments.prepay(identityPackagePayMatch[1]), 201)
       if(route==='/api/client/artifact' && method==='POST') {
         const {result,size}=await store.releaseService.artifact(body);let bytes=0
         response.writeHead(200,{'Content-Type':'application/zip','Content-Length':String(size)})
@@ -181,12 +211,15 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
         if (route === '/api/data' && method === 'GET') return json(store.lists())
         if (route === '/api/sms/settings' && method === 'GET') return json(sms.settings())
         if (route === '/api/sms/settings' && method === 'PUT') return json(sms.saveSettings(body, session.username))
+        if (route === '/api/usage/provider' && method === 'GET') return json(identityProvider.settings())
+        if (route === '/api/usage/provider' && method === 'PUT') return json(identityProvider.save(body, session.username))
         if (route === '/api/sms/templates' && method === 'GET') return json(sms.templates())
         if (route === '/api/sms/templates' && method === 'POST') return json(sms.saveTemplate(body, session.username), 201)
         if (route === '/api/sms/packages' && method === 'GET') return json(sms.packages())
         if (route === '/api/sms/packages' && method === 'POST') return json(sms.savePackage(body, session.username), 201)
         if (route === '/api/sms/accounts' && method === 'GET') return json(sms.accountRows())
         if (route === '/api/sms/credentials' && method === 'GET') return json(sms.credentials())
+        if (route === '/api/sms/usage-summary' && method === 'GET') return json(sms.usageSummary(url.searchParams.get('projectId')))
         if (route === '/api/sms/usage' && method === 'GET') return json(sms.usage(url.searchParams.get('projectId'), url.searchParams.get('limit')))
         let smsMatch
         if ((smsMatch = route.match(/^\/api\/sms\/templates\/([a-z0-9_.-]{2,80})$/)) && method === 'PUT') return json(sms.saveTemplate({ ...body, templateKey: smsMatch[1] }, session.username))
@@ -230,6 +263,11 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
         if ((match = route.match(/^\/api\/entitlements\/([^/]+)\/([^/]+)$/)) && method === 'DELETE') return json(store.deleteEntitlement(decodeURIComponent(match[1]),decodeURIComponent(match[2]),session.username))
         if ((match = route.match(/^\/api\/usage\/accounts\/([a-f\d-]+)\/credit$/)) && method === 'POST') return json(usageBilling.credit(match[1], body.amountCents, body.reference, session.username))
         if ((match = route.match(/^\/api\/usage\/accounts\/([a-f\d-]+)\/status$/)) && method === 'PUT') return json(usageBilling.setStatus(match[1], body.status, session.username))
+        if ((match = route.match(/^\/api\/usage\/accounts\/([a-f\d-]+)$/)) && method === 'PUT') return json(usageBilling.saveAccount(match[1], body, session.username))
+        if (route === '/api/identity/packages' && method === 'GET') return json(identityPackages.packages())
+        if (route === '/api/identity/packages' && method === 'POST') return json(identityPackages.savePackage(body, session.username), 201)
+        if ((match = route.match(/^\/api\/identity\/packages\/([a-f\d-]{36})$/)) && method === 'PUT') return json(identityPackages.savePackage({ ...body, id: match[1] }, session.username))
+        if ((match = route.match(/^\/api\/usage\/accounts\/([a-f\d-]+)\/packages$/)) && method === 'POST') return json(identityPackages.grantPackage(match[1], body.packageId, session.username), 201)
         if ((match = route.match(/^\/api\/payments\/([\w-]+)$/)) && method === 'PUT') return json(store.management.savePaymentProvider(match[1],body,session.username))
         if (route === '/api/payment-keys/upload' && method === 'POST') return json(store.management.uploadPaymentKey(body,session.username),201)
         if (route === '/api/mail/test' && method === 'POST') return json(mailer.test(body,session.username))
