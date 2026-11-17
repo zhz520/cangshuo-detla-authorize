@@ -73,7 +73,8 @@
         <el-table :data="packages" stripe>
           <el-table-column prop="code" label="编码" width="120" />
           <el-table-column prop="name" label="套餐" min-width="160" />
-          <el-table-column prop="verification_count" label="核验次数" width="100" />
+          <el-table-column label="类型" width="110"><template #default="{row}"><el-tag :type="row.credit_cents>0?'warning':'info'">{{ row.credit_cents>0?'余额充值':'次数套餐' }}</el-tag></template></el-table-column>
+          <el-table-column label="次数 / 到账" width="120"><template #default="{row}">{{ row.credit_cents>0 ? money(row.credit_cents) : row.verification_count + ' 次' }}</template></el-table-column>
           <el-table-column label="价格" width="110"><template #default="{row}">{{ money(row.price_cents) }}</template></el-table-column>
           <el-table-column prop="validity_days" label="有效天数" width="100" />
           <el-table-column label="范围" width="110"><template #default="{row}">{{ row.scope_type==='PROJECT' ? '指定项目' : '全局' }}</template></el-table-column>
@@ -113,9 +114,11 @@
       <el-row :gutter="14">
         <el-col :xs="24" :sm="12"><el-form-item label="套餐编码"><el-input v-model="packageForm.code" /></el-form-item></el-col>
         <el-col :xs="24" :sm="12"><el-form-item label="套餐名称"><el-input v-model="packageForm.name" /></el-form-item></el-col>
-        <el-col :xs="24" :sm="12"><el-form-item label="核验次数"><el-input-number v-model="packageForm.verificationCount" :min="1" :max="10000000" /></el-form-item></el-col>
-        <el-col :xs="24" :sm="12"><el-form-item label="价格（元）"><el-input v-model="packageForm.priceYuan" inputmode="decimal" /></el-form-item></el-col>
-        <el-col :xs="24" :sm="12"><el-form-item label="有效天数"><el-input-number v-model="packageForm.validityDays" :min="1" :max="3660" /></el-form-item></el-col>
+        <el-col :xs="24" :sm="12"><el-form-item label="套餐类型"><el-select v-model="packageForm.packageType"><el-option label="实名核验次数套餐" value="COUNT" /><el-option label="余额充值" value="BALANCE" /></el-select></el-form-item></el-col>
+        <el-col v-if="packageForm.packageType==='COUNT'" :xs="24" :sm="12"><el-form-item label="核验次数"><el-input-number v-model="packageForm.verificationCount" :min="1" :max="10000000" /></el-form-item></el-col>
+        <el-col v-if="packageForm.packageType==='BALANCE'" :xs="24" :sm="12"><el-form-item label="到账金额（元）"><el-input v-model="packageForm.creditYuan" inputmode="decimal" /></el-form-item></el-col>
+        <el-col v-if="packageForm.packageType==='COUNT'" :xs="24" :sm="12"><el-form-item label="价格（元）"><el-input v-model="packageForm.priceYuan" inputmode="decimal" /></el-form-item></el-col>
+        <el-col v-if="packageForm.packageType==='COUNT'" :xs="24" :sm="12"><el-form-item label="有效天数"><el-input-number v-model="packageForm.validityDays" :min="1" :max="3660" /></el-form-item></el-col>
         <el-col :xs="24" :sm="12"><el-form-item label="适用范围"><el-select v-model="packageForm.scopeType"><el-option label="全局" value="GLOBAL"/><el-option label="指定项目" value="PROJECT"/></el-select></el-form-item></el-col>
         <el-col v-if="packageForm.scopeType==='PROJECT'" :span="24"><el-form-item label="项目"><el-select v-model="packageForm.scopeId"><el-option v-for="row in projects" :key="row.project_id" :value="row.project_id" :label="row.customer_name + ' / ' + row.project_name" /></el-select></el-form-item></el-col>
         <el-col :xs="24" :sm="12"><el-form-item label="状态"><el-select v-model="packageForm.status"><el-option label="草稿" value="DRAFT"/><el-option label="启用" value="ACTIVE"/><el-option label="停用" value="RETIRED"/></el-select></el-form-item></el-col>
@@ -150,7 +153,7 @@ const money = cents => '¥' + (Number(cents || 0) / 100).toFixed(2)
 const time = value => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—'
 const modeLabel = value => ({ METERED: '按次', PACKAGE: '套餐', HYBRID: '套餐优先' }[value] || value || '—')
 const resultLabel = value => String(value || '').startsWith('MATCH') ? '姓名证件一致' : String(value || '').startsWith('MISMATCH') ? '姓名证件不一致' : value || '—'
-const activePackages = computed(() => packages.value.filter(item => item.status === 'ACTIVE'))
+const activePackages = computed(() => packages.value.filter(item => item.status === 'ACTIVE' && !(Number(item.credit_cents) > 0)))
 const projects = computed(() => {
   const map = new Map()
   rows.value.forEach(row => map.set(row.project_id, { project_id: row.project_id, project_name: row.project_name, customer_name: row.customer_name }))
@@ -220,15 +223,17 @@ async function grantPackage() {
 }
 function openPackage(row = null) {
   packageEditing.value = Boolean(row)
-  Object.assign(packageForm, row ? { id: row.id, code: row.code, name: row.name, verificationCount: row.verification_count, priceYuan: (Number(row.price_cents || 0) / 100).toFixed(2), validityDays: row.validity_days, scopeType: row.scope_type, scopeId: row.scope_id || '', status: row.status, description: row.description || '' } : { id: '', code: '', name: '', verificationCount: 100, priceYuan: '50.00', validityDays: 365, scopeType: 'GLOBAL', scopeId: '', status: 'DRAFT', description: '' })
+  Object.assign(packageForm, row ? { id: row.id, code: row.code, name: row.name, packageType: Number(row.credit_cents) > 0 ? 'BALANCE' : 'COUNT', creditYuan: Number(row.credit_cents) > 0 ? (Number(row.credit_cents) / 100).toFixed(2) : '10.00', verificationCount: row.verification_count, priceYuan: (Number(row.price_cents || 0) / 100).toFixed(2), validityDays: row.validity_days, scopeType: row.scope_type, scopeId: row.scope_id || '', status: row.status, description: row.description || '' } : { id: '', code: '', name: '', packageType: 'COUNT', creditYuan: '10.00', verificationCount: 100, priceYuan: '50.00', validityDays: 365, scopeType: 'GLOBAL', scopeId: '', status: 'DRAFT', description: '' })
   packageVisible.value = true
 }
 async function savePackage() {
   if (!packageForm.code.trim() || !packageForm.name.trim()) return ElMessage.warning('请填写套餐编码和名称')
-  if (!/^(?:0|[1-9]\d{0,8})(?:\.\d{1,2})?$/.test(String(packageForm.priceYuan))) return ElMessage.warning('请输入有效套餐价格')
+  const balance = packageForm.packageType === 'BALANCE'
+  if (balance && !/^(?:0|[1-9]\d{0,8})(?:\.\d{1,2})?$/.test(String(packageForm.creditYuan))) return ElMessage.warning('请输入有效充值金额')
+  if (!balance && !/^(?:0|[1-9]\d{0,8})(?:\.\d{1,2})?$/.test(String(packageForm.priceYuan))) return ElMessage.warning('请输入有效套餐价格')
   saving.value = true
   try {
-    const body = { code: packageForm.code.trim(), name: packageForm.name.trim(), verificationCount: packageForm.verificationCount, priceCents: toCents(packageForm.priceYuan), validityDays: packageForm.validityDays, scopeType: packageForm.scopeType, scopeId: packageForm.scopeType === 'PROJECT' ? packageForm.scopeId : null, status: packageForm.status, description: packageForm.description }
+    const body = { code: packageForm.code.trim(), name: packageForm.name.trim(), verificationCount: balance ? 0 : packageForm.verificationCount, priceCents: toCents(balance ? packageForm.creditYuan : packageForm.priceYuan), validityDays: balance ? 1 : packageForm.validityDays, creditCents: balance ? toCents(packageForm.creditYuan) : 0, scopeType: packageForm.scopeType, scopeId: packageForm.scopeType === 'PROJECT' ? packageForm.scopeId : null, status: packageForm.status, description: packageForm.description }
     await props.api(packageEditing.value ? '/identity/packages/' + packageForm.id : '/identity/packages', { method: packageEditing.value ? 'PUT' : 'POST', body })
     packageVisible.value = false; await load(); ElMessage.success('套餐已保存')
   } catch (error) { ElMessage.error(error.message) } finally { saving.value = false }

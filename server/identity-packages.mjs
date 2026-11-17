@@ -33,9 +33,13 @@ export class IdentityPackageService {
     if (!/^[A-Za-z0-9_.-]{2,80}$/.test(code)) fail('套餐编码格式不正确')
     const name = optionalText(body.name, '套餐名称', 120)
     if (!name) fail('套餐名称不能为空')
-    const verificationCount = integer(body.verificationCount, '核验次数', 1, 10000000)
-    const priceCents = integer(body.priceCents, '套餐价格（分）', 0, 100000000)
-    const validityDays = integer(body.validityDays, '有效天数', 1, 3660)
+    const creditCents = integer(body.creditCents ?? 0, '充值金额（分）', 0, 100000000)
+    if (creditCents > 0 && creditCents < 100) fail('充值金额至少为 1 元')
+    const priceCents = creditCents > 0 && body.priceCents == null
+      ? creditCents
+      : integer(body.priceCents, '套餐价格（分）', 0, 100000000)
+    const verificationCount = creditCents > 0 ? 0 : integer(body.verificationCount, '核验次数', 1, 10000000)
+    const validityDays = creditCents > 0 ? 1 : integer(body.validityDays, '有效天数', 1, 3660)
     const scopeType = String(body.scopeType || 'GLOBAL').toUpperCase()
     if (!['GLOBAL', 'PROJECT'].includes(scopeType)) fail('套餐适用范围不正确')
     const scopeId = scopeType === 'PROJECT' ? identifier(body.scopeId, '套餐项目') : null
@@ -48,13 +52,13 @@ export class IdentityPackageService {
     if (editing && !this.db.prepare('SELECT 1 FROM identity_package_products WHERE id=?').get(id)) fail('套餐不存在', 404)
     this.store.transaction(() => {
       if (editing) {
-        this.db.prepare('UPDATE identity_package_products SET code=?,name=?,verification_count=?,price_cents=?,validity_days=?,scope_type=?,scope_id=?,status=?,sort=?,description=?,updated_at=? WHERE id=?')
-          .run(code, name, verificationCount, priceCents, validityDays, scopeType, scopeId, status, Number(body.sort) || 0, optionalText(body.description, '套餐说明'), time, id)
+        this.db.prepare('UPDATE identity_package_products SET code=?,name=?,verification_count=?,price_cents=?,validity_days=?,credit_cents=?,scope_type=?,scope_id=?,status=?,sort=?,description=?,updated_at=? WHERE id=?')
+          .run(code, name, verificationCount, priceCents, validityDays, creditCents, scopeType, scopeId, status, Number(body.sort) || 0, optionalText(body.description, '套餐说明'), time, id)
       } else {
-        this.db.prepare('INSERT INTO identity_package_products(id,code,name,verification_count,price_cents,validity_days,scope_type,scope_id,status,sort,description,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
-          .run(id, code, name, verificationCount, priceCents, validityDays, scopeType, scopeId, status, Number(body.sort) || 0, optionalText(body.description, '套餐说明'), time, time)
+        this.db.prepare('INSERT INTO identity_package_products(id,code,name,verification_count,price_cents,validity_days,credit_cents,scope_type,scope_id,status,sort,description,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+          .run(id, code, name, verificationCount, priceCents, validityDays, creditCents, scopeType, scopeId, status, Number(body.sort) || 0, optionalText(body.description, '套餐说明'), time, time)
       }
-      this.store.audit(actor, editing ? 'UPDATE_IDENTITY_PACKAGE' : 'CREATE_IDENTITY_PACKAGE', code, { status, verificationCount, priceCents, scopeType })
+      this.store.audit(actor, editing ? 'UPDATE_IDENTITY_PACKAGE' : 'CREATE_IDENTITY_PACKAGE', code, { status, verificationCount, priceCents, creditCents, scopeType })
     })
     return this.db.prepare('SELECT * FROM identity_package_products WHERE code=?').get(code)
   }
@@ -85,6 +89,7 @@ export class IdentityPackageService {
     const instance = this.instance(instanceId)
     const product = this.db.prepare("SELECT * FROM identity_package_products WHERE id=? AND status='ACTIVE'").get(identifier(packageId, '套餐编号'))
     if (!product) fail('套餐不存在或未启用', 404)
+    if (Number(product.credit_cents) > 0) fail('余额充值套餐请由客户购买后自动入账', 409)
     if (product.scope_type === 'PROJECT' && product.scope_id !== instance.project_id) fail('套餐不适用于该项目', 409)
     if (sourceOrderId) {
       const existing = this.db.prepare('SELECT * FROM identity_package_balances WHERE source_order_id=?').get(sourceOrderId)
@@ -110,8 +115,8 @@ export class IdentityPackageService {
     const existing = this.db.prepare("SELECT * FROM identity_package_orders WHERE instance_id=? AND package_product_id=? AND status='UNPAID' ORDER BY created_at DESC LIMIT 1").get(instance.id, product.id)
     if (existing) return { ...existing, product }
     const id = randomUUID()
-    this.db.prepare('INSERT INTO identity_package_orders(id,instance_id,package_product_id,package_name,verification_count,validity_days,amount_cents,status,created_at) VALUES (?,?,?,?,?,?,?,?,?)')
-      .run(id, instance.id, product.id, product.name, product.verification_count, product.validity_days, product.price_cents, 'UNPAID', now())
+    this.db.prepare('INSERT INTO identity_package_orders(id,instance_id,package_product_id,package_name,verification_count,validity_days,amount_cents,credit_cents,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
+      .run(id, instance.id, product.id, product.name, product.verification_count, product.validity_days, product.price_cents, product.credit_cents || 0, 'UNPAID', now())
     this.store.audit('client', 'IDENTITY_PACKAGE_ORDER', id, { instanceId: instance.id, packageId: product.id, amountCents: product.price_cents })
     return { ...this.db.prepare('SELECT * FROM identity_package_orders WHERE id=?').get(id), product }
   }
@@ -129,6 +134,24 @@ export class IdentityPackageService {
       if (Number(amountCents) !== Number(order.amount_cents)) fail('实名套餐支付金额不匹配', 409)
       const time = now()
       this.db.prepare("UPDATE identity_package_orders SET status='PAID',payment_reference=?,paid_at=? WHERE id=?").run(String(reference || transactionId || '').slice(0, 128), time, orderId)
+      if (Number(order.credit_cents) > 0) {
+        const creditReference = 'IDENTITY-BALANCE-' + orderId
+        const credited = this.db.prepare("SELECT id FROM service_ledger WHERE instance_id=? AND type='CREDIT' AND reference=?").get(order.instance_id, creditReference)
+        this.db.prepare('INSERT OR IGNORE INTO service_accounts(instance_id,updated_at) VALUES (?,?)').run(order.instance_id, time)
+        let balance
+        if (!credited) {
+          const account = this.db.prepare('SELECT * FROM service_accounts WHERE instance_id=?').get(order.instance_id)
+          balance = Number(account.balance_cents || 0) + Number(order.credit_cents)
+          this.db.prepare('UPDATE service_accounts SET balance_cents=?,updated_at=? WHERE instance_id=?').run(balance, time, order.instance_id)
+          this.db.prepare('INSERT INTO service_ledger VALUES (?,?,?,?,?,?,?)')
+            .run(randomUUID(), order.instance_id, 'CREDIT', order.credit_cents, balance, creditReference, time)
+        } else {
+          balance = Number(this.db.prepare('SELECT balance_cents FROM service_accounts WHERE instance_id=?').get(order.instance_id)?.balance_cents || 0)
+        }
+        this.db.prepare("UPDATE identity_package_orders SET status='GRANTED',granted_at=? WHERE id=?").run(time, orderId)
+        this.store.audit('system', 'IDENTITY_BALANCE_PAID', orderId, { transactionId: String(transactionId || '').slice(0, 80), creditCents: order.credit_cents, balanceCents: balance, idempotent: Boolean(credited) })
+        return { order: this.packageOrder(orderId), grant: { creditCents: order.credit_cents, balanceCents: balance, idempotent: Boolean(credited) } }
+      }
       const existing = this.db.prepare('SELECT * FROM identity_package_balances WHERE source_order_id=?').get(orderId)
       let grant
       if (existing) {

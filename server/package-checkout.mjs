@@ -111,10 +111,11 @@ export async function prepayPackageOfficial(service, token, openid, kind, label)
 
 export async function renderPackageCheckout(service, token, request, baseUrl, kind) {
   const payments = service.payments
-  const title = kind === 'sms' ? '短信套餐收款' : '实名核验套餐收款'
   let context
   try { context = service.context(token) } catch (error) { return payments.renderMessage(error.message || '套餐支付链接无效') }
   const { summary, payment } = context
+  const isBalance = Number(summary.creditCents) > 0
+  const title = isBalance ? (kind === 'sms' ? '短信余额充值' : '实名余额充值') : (kind === 'sms' ? '短信套餐收款' : '实名核验套餐收款')
   const granted = summary.status === 'GRANTED'
   const scene = officialCheckoutScene(token, kind, request, summary.status)
   const scanQr = value => payments.qr.toString(value, { type: 'svg', margin: 4, width: 280, color: { dark: '#111827', light: '#ffffff' } })
@@ -139,8 +140,8 @@ export async function renderPackageCheckout(service, token, request, baseUrl, ki
       } catch (error) { return payments.renderMessage(error.message || '微信支付暂不可用') }
     }
   }
-  const count = kind === 'sms' ? summary.messageCount + ' 条' : summary.verificationCount + ' 次'
+  const count = isBalance ? '¥' + (summary.creditCents / 100).toFixed(2) : (kind === 'sms' ? summary.messageCount + ' 条' : summary.verificationCount + ' 次')
   const statusUrl = '/api/checkout/' + kind + '-package/' + encodeURIComponent(token)
   const script = granted ? '' : `<script>${autoPay}const poll=async()=>{try{const r=await fetch(${JSON.stringify(statusUrl)},{cache:'no-store'});if(r.status===404||r.status===410){document.querySelector('.message').textContent='支付链接已失效，请返回后台查询套餐状态。';return}if(r.ok&&(await r.json()).status==='GRANTED'){location.replace(${JSON.stringify(checkoutPath(token, kind) + '?paid=1')});return}}catch{}setTimeout(poll,3000)};setTimeout(poll,3000);</script>`
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>${payments.css()}</style></head><body><main><h1>${granted ? '支付成功，套餐已发放' : title}</h1><section class="order"><div><span>套餐</span><strong>${esc(summary.packageName)}</strong></div><div><span>客户</span><strong>${esc(summary.customerName)} · ${esc(summary.projectName)}</strong></div><div><span>支付金额</span><strong class="price">¥${(summary.amountCents / 100).toFixed(2)}</strong></div><div><span>套餐额度</span><strong>${esc(count)}</strong></div></section><section class="pay-box">${paymentBox}</section><p class="message">${granted ? '请返回客户后台刷新服务页面。' : '支付确认后，套餐自动发放。'}</p></main>${script}</body></html>`
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>${payments.css()}</style></head><body><main><h1>${granted ? (isBalance ? '支付成功，余额已到账' : '支付成功，套餐已发放') : title}</h1><section class="order"><div><span>${isBalance ? '充值项' : '套餐'}</span><strong>${esc(summary.packageName)}</strong></div><div><span>客户</span><strong>${esc(summary.customerName)} · ${esc(summary.projectName)}</strong></div><div><span>支付金额</span><strong class="price">¥${(summary.amountCents / 100).toFixed(2)}</strong></div><div><span>${isBalance ? '到账金额' : '套餐额度'}</span><strong>${esc(count)}</strong></div></section><section class="pay-box">${paymentBox}</section><p class="message">${granted ? '请返回客户后台刷新服务页面。' : (isBalance ? '支付确认后，余额自动入账。' : '支付确认后，套餐自动发放。')}</p></main>${script}</body></html>`
 }

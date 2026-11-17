@@ -57,6 +57,54 @@ test('package payment notification grants exactly one package balance', async ()
   } finally { store.close() }
 })
 
+test('SMS balance recharge package credits the wallet once and ignores replay', async () => {
+  const { store, project, instance, sms, service } = setup()
+  try {
+    const product = sms.savePackage({ code: 'sms-balance-100', name: '短信余额充值 100 元', creditCents: 10000, scopeType: 'GLOBAL', status: 'ACTIVE' }, 'owner')
+    const saved = store.db.prepare('SELECT message_count,price_cents,credit_cents FROM sms_package_products WHERE id=?').get(product.id)
+    assert.deepEqual({ ...saved }, { message_count: 0, price_cents: 10000, credit_cents: 10000 })
+    const order = sms.createPackageOrder(instance, product.id)
+    assert.equal(order.credit_cents, 10000)
+    const token = 'B'.repeat(43)
+    store.db.prepare('INSERT INTO sms_package_checkout_sessions(token_hash,package_order_id,expires_at,created_at) VALUES (?,?,?,?)').run(createHash('sha256').update(token).digest('hex'), order.id, Date.now() + 60000, new Date().toISOString())
+    const transaction = { out_trade_no: 'SMSPKG-balance-test', transaction_id: 'wx-balance-transaction', mchid: 'mch-test', appid: 'app-test', amount: { total: 10000, currency: 'CNY' } }
+    store.db.prepare('INSERT INTO sms_package_payments(id,package_order_id,out_trade_no,method,amount_cents,status,created_at) VALUES (?,?,?,?,?,?,?)').run(randomUUID(), order.id, transaction.out_trade_no, 'NATIVE', 10000, 'UNPAID', new Date().toISOString())
+    const first = await service.notification(transaction, { merchantId: 'mch-test', appId: 'app-test', officialAppId: 'official-test' })
+    assert.equal(first.paid, true)
+    assert.equal(store.db.prepare('SELECT balance_cents FROM sms_wallets WHERE project_id=?').get(project).balance_cents, 10000)
+    assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM sms_ledger WHERE project_id=? AND type='CREDIT'").get(project).count, 1)
+    const replay = await service.notification(transaction, { merchantId: 'mch-test', appId: 'app-test', officialAppId: 'official-test' })
+    assert.equal(replay.idempotent, true)
+    assert.equal(store.db.prepare('SELECT balance_cents FROM sms_wallets WHERE project_id=?').get(project).balance_cents, 10000)
+    assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM sms_ledger WHERE project_id=? AND type='CREDIT'").get(project).count, 1)
+  } finally { store.close() }
+})
+
+test('identity balance recharge package credits the instance account once', async () => {
+  const { store, instance } = setup()
+  try {
+    const billing = new UsageBilling(store)
+    const packages = new IdentityPackageService(store, { billing })
+    const service = new IdentityPackagePaymentService(store, { packages, payments: { validateToken: token => token } })
+    const product = packages.savePackage({ code: 'id-balance-50', name: '实名余额充值 50 元', creditCents: 5000, scopeType: 'GLOBAL', status: 'ACTIVE' }, 'owner')
+    assert.equal(product.credit_cents, 5000)
+    const order = packages.createPackageOrder(instance, product.id)
+    assert.equal(order.credit_cents, 5000)
+    const token = 'C'.repeat(43)
+    store.db.prepare('INSERT INTO identity_package_checkout_sessions(token_hash,package_order_id,expires_at,created_at) VALUES (?,?,?,?)').run(createHash('sha256').update(token).digest('hex'), order.id, Date.now() + 60000, new Date().toISOString())
+    const transaction = { out_trade_no: 'IDPKG-balance-test', transaction_id: 'wx-id-balance', mchid: 'mch-test', appid: 'app-test', amount: { total: 5000, currency: 'CNY' } }
+    store.db.prepare('INSERT INTO identity_package_payments(id,package_order_id,out_trade_no,method,amount_cents,status,created_at) VALUES (?,?,?,?,?,?,?)').run(randomUUID(), order.id, transaction.out_trade_no, 'NATIVE', 5000, 'UNPAID', new Date().toISOString())
+    const first = await service.notification(transaction, { merchantId: 'mch-test', appId: 'app-test', officialAppId: 'official-test' })
+    assert.equal(first.paid, true)
+    assert.equal(store.db.prepare('SELECT balance_cents FROM service_accounts WHERE instance_id=?').get(instance).balance_cents, 5000)
+    assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM service_ledger WHERE instance_id=? AND type='CREDIT'").get(instance).count, 1)
+    const replay = await service.notification(transaction, { merchantId: 'mch-test', appId: 'app-test', officialAppId: 'official-test' })
+    assert.equal(replay.idempotent, true)
+    assert.equal(store.db.prepare('SELECT balance_cents FROM service_accounts WHERE instance_id=?').get(instance).balance_cents, 5000)
+    assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM service_ledger WHERE instance_id=? AND type='CREDIT'").get(instance).count, 1)
+  } finally { store.close() }
+})
+
 test('SMS and identity checkout prefer official QR/JSAPI, validate project gate, and snapshot amount', async () => {
   const { store, project, instance, sms, service, payments } = setup()
   try {

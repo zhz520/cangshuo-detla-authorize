@@ -26,7 +26,7 @@ export class IdentityPackagePaymentService {
   }
 
   sessionRow(token) {
-    return this.store.db.prepare('SELECT s.token_hash,s.expires_at,o.id AS order_id,o.instance_id,o.amount_cents,o.status,o.paid_at,o.granted_at,o.package_name,o.verification_count,o.validity_days,i.project_id,pr.name AS project_name,c.name AS customer_name,pr.payment_methods AS project_methods,pay.enabled AS provider_enabled,pay.methods AS provider_methods FROM identity_package_checkout_sessions s JOIN identity_package_orders o ON o.id=s.package_order_id JOIN instances i ON i.id=o.instance_id JOIN projects pr ON pr.id=i.project_id JOIN customers c ON c.id=i.customer_id LEFT JOIN payment_providers pay ON pay.id=pr.payment_provider WHERE s.token_hash=?')
+    return this.store.db.prepare('SELECT s.token_hash,s.expires_at,o.id AS order_id,o.instance_id,o.amount_cents,o.credit_cents,o.status,o.paid_at,o.granted_at,o.package_name,o.verification_count,o.validity_days,i.project_id,pr.name AS project_name,c.name AS customer_name,pr.payment_methods AS project_methods,pay.enabled AS provider_enabled,pay.methods AS provider_methods FROM identity_package_checkout_sessions s JOIN identity_package_orders o ON o.id=s.package_order_id JOIN instances i ON i.id=o.instance_id JOIN projects pr ON pr.id=i.project_id JOIN customers c ON c.id=i.customer_id LEFT JOIN payment_providers pay ON pay.id=pr.payment_provider WHERE s.token_hash=?')
       .get(hash(this.payments.validateToken(token)))
   }
 
@@ -39,7 +39,7 @@ export class IdentityPackagePaymentService {
       if (row.provider_enabled === 1) methods = packageMethods(row.provider_methods, row.project_methods, this.payments)
     } catch {}
     const paymentReady = methods.length > 0
-    return { orderId: row.order_id, packageName: row.package_name, amountCents: row.amount_cents, verificationCount: row.verification_count, validityDays: row.validity_days, projectName: row.project_name, customerName: row.customer_name, status: row.granted_at ? 'GRANTED' : row.status, paidAt: row.paid_at, grantedAt: row.granted_at, expiresAt: new Date(row.expires_at).toISOString(), methods, paymentReady }
+    return { orderId: row.order_id, packageName: row.package_name, amountCents: row.amount_cents, creditCents: row.credit_cents, verificationCount: row.verification_count, validityDays: row.validity_days, projectName: row.project_name, customerName: row.customer_name, status: row.granted_at ? 'GRANTED' : row.status, paidAt: row.paid_at, grantedAt: row.granted_at, expiresAt: new Date(row.expires_at).toISOString(), methods, paymentReady }
   }
 
   context(token) {
