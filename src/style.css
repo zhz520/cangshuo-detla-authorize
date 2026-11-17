@@ -230,7 +230,7 @@ button, input, textarea, select { font-family: inherit; }
 .shell .content > *:nth-child(3) { animation-delay: .07s; }
 @keyframes admin-rise {
   from { opacity: 0; transform: translateY(7px); }
-  to { opacity: 1; transform: translateY(0); }
+  to { opacity: 1; transform: none; }
 }
 .shell .page-heading {
   position: relative;
