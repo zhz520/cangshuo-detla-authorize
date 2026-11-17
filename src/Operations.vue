@@ -36,13 +36,13 @@
   <el-dialog v-model="itemsVisible" :title="'配置 '+release?.version+' 更新内容'" width="min(850px,96vw)"><p class="muted">每项内容默认可由客户单独选择或取消；安全修复和必要迁移请标记为必须更新。依赖项会被自动补充。</p><div v-for="(item,index) in items" :key="index" class="update-item"><el-input v-model="item.id" placeholder="内容编号（英文字母）"/><el-input v-model="item.name" placeholder="内容名称"/><el-input v-model="item.description" placeholder="变更说明"/><el-select v-model="item.component"><el-option label="后端" value="backend"/><el-option label="管理后台" value="admin"/><el-option label="H5" value="h5"/></el-select><el-select v-model="item.requires" multiple clearable placeholder="依赖的更新内容"><el-option v-for="dependency in items.filter(candidate=>candidate.id && candidate.id!==item.id)" :key="dependency.id" :value="dependency.id" :label="dependency.name || dependency.id"/></el-select><el-select v-model="item.featureId" clearable placeholder="可选：需要购买的功能模块"><el-option v-for="module in data.modules.filter(module=>module.product_id===release.product_id)" :key="module.id" :value="module.id" :label="module.name"/></el-select><el-checkbox v-model="item.required">必须更新</el-checkbox><el-button type="danger" text @click="items.splice(index,1)">删除</el-button></div><el-button @click="items.push({id:'',name:'',description:'',component:'backend',required:false,requires:[]})">添加更新内容</el-button><template #footer><el-button @click="itemsVisible=false">取消</el-button><el-button type="primary" :loading="saving" @click="saveItems">保存</el-button></template></el-dialog>
 </template>
 <script setup>
-import {computed,reactive,ref,watch,onDeactivated} from 'vue'
+import {computed,nextTick,reactive,ref,watch,onDeactivated} from 'vue'
 import {ElMessage,ElMessageBox} from 'element-plus'
 import ListPager from './ListPager.vue'
 import PaymentSettings from './PaymentSettings.vue'
 import { PAYMENT_METHOD_LABELS } from './payment-methods'
 import {useRecords} from './records'
-const props=defineProps({page:String,data:Object,api:Function,refresh:Function}),emit=defineEmits(['publish'])
+const props=defineProps({page:String,data:Object,api:Function,refresh:Function,createRequest:{type:Number,default:0}}),emit=defineEmits(['publish','consume-create-request'])
 const kinds={WEB:'网页系统',H5:'H5 / 移动网页',MINIAPP:'小程序项目',OTHER:'其他项目'},policies={PENDING:'待确认',STOP_ALL:'暂停全部业务请求',FINISH_EXISTING:'停止新业务，允许在途完成'},mailStatuses={PENDING:'待发送',RETRY:'等待重试',SENT:'已发送',FAILED:'发送失败'}
 const visible=ref(false),kind=ref('product'),editing=ref(false),form=reactive({}),saving=ref(false),syncing=ref(''),mail=reactive({}),productId=ref('detla'),product=computed(()=>props.data.products.find(row=>row.id===productId.value)),itemsVisible=ref(false),items=ref([]),release=ref(null)
 const mailSnapshot=ref(''),recipientDraft=ref('')
@@ -62,6 +62,7 @@ const opsMetrics=computed(()=>{
 const {query:search,state:listState,total,rows}=useRecords(()=>{const list=props.data[sources[props.page]]||[];return props.page==='releases'?list.filter(row=>row.product_id===productId.value):list},()=>props.page==='releases'?props.page+':'+productId.value:props.page)
 function closeDialogs(){visible.value=false;itemsVisible.value=false;form.githubToken=''}
 watch(()=>props.page,closeDialogs);onDeactivated(closeDialogs)
+watch([()=>props.page,()=>props.createRequest],async ([page,request])=>{if(page==='projects'&&request>0){await nextTick();edit('project');emit('consume-create-request')}},{immediate:true})
 watch(()=>props.data.products,list=>{if(!list.some(row=>row.id===productId.value))productId.value=list[0]?.id||''},{immediate:true})
 const time=value=>value?new Date(value).toLocaleString('zh-CN',{hour12:false}):'尚未检查'
 const releaseNotesUrl=row=>`${window.location.origin}/public/release-notes/${encodeURIComponent(row.product_id)}/${encodeURIComponent(row.version)}`

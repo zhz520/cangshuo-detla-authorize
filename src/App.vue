@@ -64,7 +64,7 @@
             </article>
           </div>
           <el-card shadow="never" class="overview-card process-card">
-            <template #header><div class="section-title"><span>开通流程</span><el-button type="primary" @click="open('project')">立即开通 <span class="button-arrow">›</span></el-button></div></template>
+            <template #header><div class="section-title"><span>开通流程</span><el-button type="primary" @click="startProjectFlow">立即开通 <span class="button-arrow">›</span></el-button></div></template>
             <div class="process-track">
               <div v-for="(step,index) in processSteps" :key="step.title" class="process-step" :class="{ done: step.done, active: step.active }">
                 <span class="process-node">{{ index + 1 }}</span>
@@ -99,7 +99,7 @@
         </template>
                 <SupportAdmin v-if="loaded&&page==='support'" :api="api" :customers="data.customers"/>
         <UsageAccounts v-if="loaded&&page==='usage'" :api="api"/>
-        <KeepAlive><Operations v-if="loaded&&operationsPages.includes(page)" :page="page" :data="data" :api="api" :refresh="refreshAfterWrite" @publish="publish"/></KeepAlive>
+        <KeepAlive><Operations v-if="loaded&&operationsPages.includes(page)" :page="page" :data="data" :api="api" :refresh="refreshAfterWrite" :create-request="operationsCreateRequest" @consume-create-request="operationsCreateRequest=0" @publish="publish"/></KeepAlive>
         <KeepAlive><ServiceGroups v-if="loaded&&page==='serviceGroups'" :data="data" :api="api" :refresh="refreshAfterWrite"/></KeepAlive>
         <section v-if="loaded&&page!=='overview'&&page!=='support'&&page!=='usage'&&page!=='serviceGroups'&&!operationsPages.includes(page)" class="workspace-page">
           <div class="insight-grid">
@@ -168,7 +168,7 @@ const Operations=defineAsyncComponent({loader:()=>import('./Operations.vue'),del
 const ServiceGroups=defineAsyncComponent({loader:()=>import('./ServiceGroups.vue'),delay:120,timeout:30000,loadingComponent:{render:()=>h('div',{class:'page-loading',role:'status'},'正在加载服务组页面…')},errorComponent:{render:()=>h('div',{class:'page-loading',role:'alert'},['页面资源加载失败，请检查网络。',h('button',{onClick:()=>window.location.reload()},'重新加载')])}})
 const SupportAdmin=defineAsyncComponent(()=>import('./SupportAdmin.vue'))
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { HomeFilled, User, Monitor, Goods, Document, Key, UploadFilled, Clock, Connection, CreditCard } from '@element-plus/icons-vue'
+import { HomeFilled, User, Monitor, Goods, Document, Key, CircleCheck, UploadFilled, Clock, Connection, CreditCard } from '@element-plus/icons-vue'
 const navigationGroups=[
   {name:'工作台',items:[{id:'overview',name:'运营概览',icon:HomeFilled}]},
   {name:'客户与业务',items:[{id:'customers',name:'客户管理',icon:User},{id:'projects',name:'项目管理',icon:Monitor},{id:'instances',name:'实例接入',icon:Connection}]},
@@ -185,7 +185,7 @@ const menuOpen=ref(false), sidebarCollapsed=ref(false), searchOpen=ref(false), n
 const rememberedUsername=(()=>{try{return localStorage.getItem('authority:remember-username')||''}catch{return ''}})()
 const rememberLogin=ref(Boolean(rememberedUsername))
 const ready=ref(false),bootError=ref(''),loggedIn=ref(false),username=ref(''),csrf=ref(''),busy=ref(false),saving=ref(false),loginBusy=ref(false),logoutBusy=ref(false),page=ref('overview'),heading=ref(null),dataError=ref(''),loaded=ref(false)
-const operationsPages=['products','projects','payments','mail','releases']
+const operationsPages=['products','projects','payments','mail','releases'], operationsCreateRequest=ref(0)
 const credentials=reactive({username:rememberedUsername||'admin',password:''}),data=reactive({products:[],projects:[],paymentProviders:[],mailSettings:{},mailQueue:[],customers:[],instances:[],modules:[],entitlements:[],orders:[],licenses:[],releases:[],serviceGroups:[],sharedReleasePlans:[],audit:[]})
 const title=computed(()=>navigation.value.find(item=>item.id===page.value)?.name)
 const breadcrumbGroup=computed(()=>page.value==='support'?'工作台':navigationGroups.find(group=>group.items.some(item=>item.id===page.value))?.name||'工作台')
@@ -222,7 +222,7 @@ const stats=computed(()=>[
   {name:'已登记客户',value:data.customers.length,detail:'在册客户主体',target:'customers',icon:User},
   {name:'客户实例',value:data.instances.length,detail:'按实例绑定授权',target:'instances',icon:Monitor},
   {name:'待确认收款',value:data.orders.filter(order=>order.status==='UNPAID').length,detail:'在线支付或人工核对',target:'orders',icon:Document},
-  {name:'已签发授权',value:data.licenses.length,detail:'完成交付的授权记录',target:'licenses',icon:Key}
+  {name:'已签发授权',value:data.licenses.length,detail:'完成交付的授权记录',target:'licenses',icon:CircleCheck}
 ])
 const trendRange=ref(7)
 const trendBuckets=computed(()=>{
@@ -273,6 +273,7 @@ const processSteps=computed(()=>{
 })
 const {query:search,state:listState,total,rows:records}=useRecords(()=>data[page.value]||[],()=>page.value)
 function go(target){if(target)page.value=target}
+function startProjectFlow(){if(!data.customers.length){open('customer');return}page.value='projects';operationsCreateRequest.value++}
 function closeHeaderPanels(){searchOpen.value=false;notificationsOpen.value=false;accountOpen.value=false}
 function openHeaderPanel(panel){searchOpen.value=panel==='search';notificationsOpen.value=panel==='notifications';accountOpen.value=panel==='account'}
 function activateGlobalSearch(){openHeaderPanel('search');nextTick(()=>globalSearchInput.value?.focus())}
