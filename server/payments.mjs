@@ -3,6 +3,7 @@ import { readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
 import QRCode from 'qrcode'
 import { compareVersions, fail, identifier, text } from './store.mjs'
+import { checkoutPath, officialCheckoutScene } from './checkout-scene.mjs'
 
 const API_BASE = 'https://api.mch.weixin.qq.com'
 const CHECKOUT_FORMAT = 'cangshuo-checkout-v1'
@@ -23,6 +24,14 @@ export class PaymentService {
   constructor(store, { fetcher = fetch, qr = QRCode, sms = null } = {}) {
     this.store = store; this.fetcher = fetcher; this.qr = qr; this.sms = sms; this.smsPackagePayments = null; this.identityPackagePayments = null
     this.platformCertificates = new Map(); this.certificateExpiresAt = 0; this.certificateLoading = null
+    this.pendingPrepays = new Map()
+  }
+
+  async oncePerPrepay(number, create) {
+    if (this.pendingPrepays.has(number)) return this.pendingPrepays.get(number)
+    const pending = Promise.resolve().then(create)
+    this.pendingPrepays.set(number, pending)
+    try { return await pending } finally { this.pendingPrepays.delete(number) }
   }
 
   async createCheckout(body, baseUrl) {
@@ -91,42 +100,60 @@ export class PaymentService {
     if (summary.status === 'GRANTED') return this.renderPaid(summary)
     if (summary.status === 'CANCELLED') return this.renderMessage('订单已取消，请返回客户端重新下单')
     if (!summary.paymentReady) return this.renderMessage('授权中心尚未完成微信支付配置，请联系维护人员')
-    const wechatBrowser = /MicroMessenger/i.test(request.headers['user-agent'] || '')
-    const canOfficial = summary.methods.includes('OFFICIAL')
-    const canNative = summary.methods.includes('NATIVE')
-    const canH5 = summary.methods.includes('H5')
-    const openInWechatUrl = `${baseUrl}/pay/${encodeURIComponent(token)}`
-    const scanSvg = canOfficial && !wechatBrowser ? await this.qr.toString(openInWechatUrl, { type: 'svg', margin: 1, width: 230, color: { dark: '#111827', light: '#ffffff' } }) : ''
-    const payButton = canOfficial && wechatBrowser ? `<a class="primary" href="/api/pay/wx/oauth?token=${encodeURIComponent(token)}">微信支付</a>` : ''
-    const h5Button = canH5 && !wechatBrowser ? `<button class="primary" id="h5-pay">继续前往微信支付</button>` : ''
-    const nativeButton = canNative ? `<button class="secondary" id="native-pay">显示微信扫码支付</button>` : ''
-    return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>功能授权收款 · 沧烁授权中心</title><style>${this.css()}</style></head><body><main><p class="eyebrow">CANGSHUO · LICENSED FEATURE</p><h1>功能授权收款</h1><section class="order"><div><span>功能</span><strong>${html(summary.moduleName)}</strong></div><div><span>客户</span><strong>${html(summary.customerName)} · ${html(summary.instanceName)}</strong></div><div><span>支付金额</span><strong class="price">¥${(summary.amountCents/100).toFixed(2)}</strong></div><div><span>授权周期</span><strong>${summary.termDays} 天</strong></div><div><span>授权至</span><strong>${html(this.time(summary.validUntil))}</strong></div></section><section class="pay-box"><h2>选择支付方式</h2>${scanSvg ? `<div class="scan">${scanSvg}<p>使用微信扫码，在微信中打开后继续支付</p></div>` : ''}${payButton}${h5Button}${nativeButton}<p id="message" class="message">付款完成后，授权会自动开通；可返回客户端刷新功能商城。</p><div id="native-qr" class="scan hidden"></div></section><p class="foot">支付由沧烁授权中心统一收取，款项进入授权中心微信商户。</p></main><script>const token=${JSON.stringify(token)};const statusUrl='/api/checkout/'+encodeURIComponent(token);const poll=async()=>{try{const r=await fetch(statusUrl,{cache:'no-store'});const j=await r.json();if(j.status==='GRANTED'){location.href='/pay/'+encodeURIComponent(token)+'?paid=1';return}if(j.status==='CANCELLED'){document.getElementById('message').textContent='订单已取消，请返回客户端重新下单'}}catch{}};setInterval(poll,3000);const h5=document.getElementById('h5-pay');if(h5)h5.onclick=async()=>{h5.disabled=true;try{const r=await fetch(statusUrl+'/prepay',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({method:'H5'})});const j=await r.json();if(!r.ok)throw new Error(j.message);location.href=j.h5Url}catch(e){document.getElementById('message').textContent=e.message;h5.disabled=false}};const native=document.getElementById('native-pay');if(native)native.onclick=async()=>{native.disabled=true;try{const r=await fetch(statusUrl+'/native',{cache:'no-store'});const j=await r.json();if(!r.ok)throw new Error(j.message);document.getElementById('native-qr').innerHTML=j.svg;document.getElementById('native-qr').classList.remove('hidden')}catch(e){document.getElementById('message').textContent=e.message;native.disabled=false}};</script></body></html>`
+    const ua = request.headers['user-agent'] || ''
+    const wechatBrowser = /MicroMessenger|WindowsWechat|MacWechat/i.test(ua)
+    const existing = this.store.db.prepare('SELECT method FROM online_payments WHERE order_id=?').get(summary.orderId)?.method
+    if (existing && !summary.methods.includes(existing)) return this.renderMessage('此订单原支付通道已停用，请联系维护人员查单')
+    const canOfficial = summary.methods.includes('OFFICIAL') && (!existing || existing === 'OFFICIAL')
+    const scene = officialCheckoutScene(token, '', request, summary.status)
+    const openInWechatUrl = canOfficial ? new URL(checkoutPath(token), this.wechatConfig(true).origin || baseUrl).href : ''
+    const scanSvg = canOfficial && !scene.mobileWechat && !scene.awaitingConfirmation && summary.status !== 'PAID'
+      ? await this.qr.toString(openInWechatUrl, { type: 'svg', margin: 4, width: 280, color: { dark: '#111827', light: '#ffffff' } }) : ''
+    const payButton = canOfficial && (scene.mobileWechat || !scanSvg) ? scene.payMarkup : ''
+    const h5Button = summary.status !== 'PAID' && !canOfficial && summary.methods.includes('H5') && (!existing || existing === 'H5') && !wechatBrowser && !scene.awaitingConfirmation ? `<button class="primary" id="h5-pay">继续前往微信支付</button>` : ''
+    const nativeButton = summary.status !== 'PAID' && !canOfficial && summary.methods.includes('NATIVE') && (!existing || existing === 'NATIVE') && !scene.awaitingConfirmation ? `<button class="secondary" id="native-pay">显示微信扫码支付</button>` : ''
+    return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>功能授权收款 · 沧烁授权中心</title><style>${this.css()}</style></head><body><main><p class="eyebrow">CANGSHUO · LICENSED FEATURE</p><h1>功能授权收款</h1><section class="order"><div><span>功能</span><strong>${html(summary.moduleName)}</strong></div><div><span>客户</span><strong>${html(summary.customerName)} · ${html(summary.instanceName)}</strong></div><div><span>支付金额</span><strong class="price">¥${(summary.amountCents/100).toFixed(2)}</strong></div><div><span>授权周期</span><strong>${summary.termDays} 天</strong></div><div><span>授权至</span><strong>${html(this.time(summary.validUntil))}</strong></div></section><section class="pay-box"><h2>选择支付方式</h2>${scanSvg ? `<div class="scan">${scanSvg}<p>使用微信扫码，在微信中打开后继续支付</p></div>` : ''}${payButton}${h5Button}${nativeButton}<p id="message" class="message">付款完成后，授权会自动开通；可返回客户端刷新功能商城。</p><div id="native-qr" class="scan hidden"></div></section><p class="foot">支付由沧烁授权中心统一收取，款项进入授权中心微信商户。</p></main><script>${canOfficial ? scene.autoPayScript : ''}const token=${JSON.stringify(token)};const statusUrl='/api/checkout/'+encodeURIComponent(token);const poll=async()=>{try{const r=await fetch(statusUrl,{cache:'no-store'});const j=await r.json();if(j.status==='GRANTED'){location.href='/pay/'+encodeURIComponent(token)+'?paid=1';return}if(j.status==='CANCELLED'){document.getElementById('message').textContent='订单已取消，请返回客户端重新下单'}}catch{}};setInterval(poll,3000);const h5=document.getElementById('h5-pay');if(h5)h5.onclick=async()=>{h5.disabled=true;try{const r=await fetch(statusUrl+'/prepay',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({method:'H5'})});const j=await r.json();if(!r.ok)throw new Error(j.message);location.href=j.h5Url}catch(e){document.getElementById('message').textContent=e.message;h5.disabled=false}};const native=document.getElementById('native-pay');if(native)native.onclick=async()=>{native.disabled=true;try{const r=await fetch(statusUrl+'/native',{cache:'no-store'});const j=await r.json();if(!r.ok)throw new Error(j.message);document.getElementById('native-qr').innerHTML=j.svg;document.getElementById('native-qr').classList.remove('hidden')}catch(e){document.getElementById('message').textContent=e.message;native.disabled=false}};</script></body></html>`
   }
 
   async nativeQr(token) {
     const codeUrl = await this.prepayNative(token)
-    return this.qr.toString(codeUrl, { type: 'svg', margin: 1, width: 230, color: { dark: '#111827', light: '#ffffff' } })
+    return this.qr.toString(codeUrl, { type: 'svg', margin: 4, width: 280, color: { dark: '#111827', light: '#ffffff' } })
   }
 
-  oauthUrl(token) {
+  officialContext(token, kind) {
+    if (!kind) return this.paymentContext(token, 'OFFICIAL')
+    if (kind === 'sms' && this.smsPackagePayments) return this.smsPackagePayments.officialContext(token)
+    if (kind === 'identity' && this.identityPackagePayments) return this.identityPackagePayments.officialContext(token)
+    fail('支付类型无效', 400)
+  }
+
+  oauthUrl(token, { kind = '' } = {}) {
+    const context = this.officialContext(token, kind)
+    if (context.summary.status !== 'UNPAID') fail('订单已付款，请返回收款页查单', 409)
+    if (context.payment && context.payment.method !== 'OFFICIAL') fail('该订单已选择其他支付方式，请返回原支付页', 409)
     const config = this.wechatConfig(true)
     if (!config.methods.includes('OFFICIAL')) fail('公众号支付未启用', 503)
     const redirect = new URL(OFFICIAL_CALLBACK_PATH, config.origin)
     redirect.searchParams.set('token', token)
+    if (kind) redirect.searchParams.set('kind', kind)
     const query = new URLSearchParams({ appid: config.officialAppId, redirect_uri: redirect.href, response_type: 'code', scope: 'snsapi_base', state: token })
     return `https://open.weixin.qq.com/connect/oauth2/authorize?${query}#wechat_redirect`
   }
 
-  async oauthCallback(token, code) {
+  async oauthCallback(token, code, kind = '') {
     if (!code || code.length > 256) fail('微信授权失败', 400)
+    const context = this.officialContext(token, kind)
+    if (context.summary.status !== 'UNPAID') fail('订单已付款，请返回收款页查单', 409)
+    if (context.payment && context.payment.method !== 'OFFICIAL') fail('该订单已选择其他支付方式，请返回原支付页', 409)
     const config = this.wechatConfig(true)
     const query = new URLSearchParams({ appid: config.officialAppId, secret: config.officialAppSecret, code, grant_type: 'authorization_code' })
-    const response = await this.fetcher(`https://api.weixin.qq.com/sns/oauth2/access_token?${query}`)
+    const response = await this.fetcher(`https://api.weixin.qq.com/sns/oauth2/access_token?${query}`, { signal: AbortSignal.timeout(10000) })
     if (!response.ok) fail('微信网页授权失败', 502)
     const result = await response.json()
-    if (result.errcode || !result.openid) fail(`微信网页授权失败：${result.errmsg || result.errcode || '未返回 OpenID'}`, 502)
-    const prepay = await this.prepayOfficial(token, result.openid)
-    return this.renderJsapi(prepay, token, config.origin)
+    if (result.errcode || !/^[A-Za-z0-9_-]{1,128}$/.test(String(result.openid || ''))) fail('微信网页授权失败，请检查公众号网页授权域名后重试', 502)
+    const service = kind === 'sms' ? this.smsPackagePayments : kind === 'identity' ? this.identityPackagePayments : this
+    const prepay = await service.prepayOfficial(token, result.openid)
+    return this.renderJsapi(prepay, checkoutPath(token, kind), config.origin)
   }
 
   async prepay(token, method, { openid = null, clientIp = '' } = {}) {
@@ -138,19 +165,23 @@ export class PaymentService {
 
   async prepayOfficial(token, openid) {
     const context = this.paymentContext(token, 'OFFICIAL')
-    if (context.payment?.status === 'PAID') return this.jsapiParamsFromExisting(context)
+    if (context.payment?.status === 'PAID' || context.summary.status !== 'UNPAID') fail('订单已付款，请返回收款页查单', 409)
     const config = this.wechatConfig(true)
     const payment = this.store.onlinePayment(context.row.order_id, 'OFFICIAL', context.row.amount_cents, openid)
     if (payment.method !== 'OFFICIAL') fail('该订单已选择其他支付方式，请返回后重新下单', 409)
+    if (payment.openid !== openid) fail('请使用首次发起支付的微信账号完成支付', 409)
     if (payment.prepay_id) return this.jsapiParams(config.officialAppId, payment.prepay_id, config.privateKey)
-    const data = await this.wechatRequest('POST', '/v3/pay/transactions/jsapi', {
-      appid: config.officialAppId, mchid: config.merchantId, description: this.description(context.row),
-      out_trade_no: payment.out_trade_no, notify_url: config.notifyUrl,
-      amount: { total: context.row.amount_cents, currency: 'CNY' }, payer: { openid }
+    return this.oncePerPrepay(payment.out_trade_no, async () => {
+      const data = await this.wechatRequest('POST', '/v3/pay/transactions/jsapi', {
+        appid: config.officialAppId, mchid: config.merchantId, description: this.description(context.row),
+        out_trade_no: payment.out_trade_no, notify_url: config.notifyUrl,
+        amount: { total: context.row.amount_cents, currency: 'CNY' }, payer: { openid }
+      })
+      if (!data.prepay_id) fail('微信支付未返回预支付编号', 502)
+      const updated = this.store.db.prepare("UPDATE online_payments SET prepay_id=? WHERE id=? AND status='PENDING'").run(data.prepay_id, payment.id)
+      if (!updated.changes) fail('订单已付款，请返回收款页查单', 409)
+      return this.jsapiParams(config.officialAppId, data.prepay_id, config.privateKey)
     })
-    if (!data.prepay_id) fail('微信支付未返回预支付编号', 502)
-    this.store.saveOnlinePrepay(context.row.order_id, data.prepay_id, 'OFFICIAL', openid)
-    return this.jsapiParams(config.officialAppId, data.prepay_id, config.privateKey)
   }
 
   async prepayNative(token) {
@@ -324,12 +355,6 @@ export class PaymentService {
     return { appId, timeStamp, nonceStr, package: packageValue, signType: 'RSA', paySign }
   }
 
-  jsapiParamsFromExisting(context) {
-    if (!context.payment?.prepay_id) fail('支付单已付款，请刷新查看授权', 409)
-    const config = this.wechatConfig(true)
-    return this.jsapiParams(config.officialAppId, context.payment.prepay_id, config.privateKey)
-  }
-
   wechatConfig(requireInvoice, allowDisabled = false) {
     const row = this.store.db.prepare("SELECT enabled,methods,config FROM payment_providers WHERE id='wechat_pay'").get()
     if (!row) { if (requireInvoice) fail('微信支付通道尚未配置', 503); return { configured: false, methods: [] } }
@@ -376,8 +401,34 @@ export class PaymentService {
   validateToken(token) { if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(token)) fail('支付链接无效', 404); return token }
   description(row) { return (`功能授权 · ${row.module_name}`).slice(0, 120) }
   time(value) { if (!value) return '长期有效'; const date = new Date(value); return Number.isNaN(date.getTime()) ? '待确认' : date.toLocaleString('zh-CN', { hour12: false }) }
-  css() { return `*{box-sizing:border-box}body{margin:0;background:#f4f6fa;color:#172033;font:15px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{width:min(720px,calc(100% - 28px));margin:34px auto;padding:clamp(22px,5vw,42px);background:#fff;border:1px solid #dfe5ee;border-radius:20px;box-shadow:0 20px 60px #1f29371a}.eyebrow{margin:0;color:#708096;font-size:12px;letter-spacing:.14em}h1{margin:6px 0 24px;font-size:30px}.order{display:grid;gap:10px;padding:18px;background:#f7f9fc;border-radius:14px}.order div{display:flex;justify-content:space-between;gap:20px}.order span{color:#718096}.order strong{text-align:right}.price{font-size:24px;color:#111827}.pay-box{margin-top:22px}.primary,.secondary{display:block;width:100%;padding:13px 18px;margin-top:12px;border-radius:10px;text-align:center;text-decoration:none;font-weight:700}.primary{background:#2563eb;color:#fff}.secondary{background:#fff;color:#1f4f9e;border:1px solid #b9cdec}.scan{display:grid;place-items:center;margin:18px auto;padding:16px;border:1px dashed #cbd5e1;border-radius:14px}.scan svg{width:230px;height:230px}.scan p{text-align:center;color:#64748b}.hidden{display:none}.message{min-height:25px;color:#6b7280}.foot{color:#8a96a8;font-size:13px;text-align:center;margin-top:26px}@media(max-width:520px){.order div{align-items:flex-start;flex-direction:column;gap:2px}.order strong{text-align:left}h1{font-size:25px}}` }
+  css() { return `*{box-sizing:border-box}body{margin:0;background:#f4f6fa;color:#172033;font:15px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{width:min(720px,calc(100% - 28px));margin:34px auto;padding:clamp(22px,5vw,42px);background:#fff;border:1px solid #dfe5ee;border-radius:20px;box-shadow:0 20px 60px #1f29371a}.eyebrow{margin:0;color:#708096;font-size:12px;letter-spacing:.14em}h1{margin:6px 0 24px;font-size:30px}.order{display:grid;gap:10px;padding:18px;background:#f7f9fc;border-radius:14px}.order div{display:flex;justify-content:space-between;gap:20px}.order span{color:#718096}.order strong{text-align:right}.price{font-size:24px;color:#111827}.pay-box{margin-top:22px}.primary,.secondary{display:block;width:100%;padding:13px 18px;margin-top:12px;border-radius:10px;text-align:center;text-decoration:none;font-weight:700}.primary{background:#2563eb;color:#fff}.secondary{background:#fff;color:#1f4f9e;border:1px solid #b9cdec}.scan{display:grid;place-items:center;margin:18px auto;padding:16px;border:1px dashed #cbd5e1;border-radius:14px}.scan svg{width:min(280px,100%);height:auto}.scan p{text-align:center;color:#64748b}.hidden{display:none}.message{min-height:25px;color:#6b7280}.foot{color:#8a96a8;font-size:13px;text-align:center;margin-top:26px}@media(max-width:520px){.order div{align-items:flex-start;flex-direction:column;gap:2px}.order strong{text-align:left}h1{font-size:25px}}` }
   renderMessage(message) { return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>支付提示</title><style>${this.css()}</style></head><body><main><p class="eyebrow">CANGSHUO · PAYMENT</p><h1>支付暂不可用</h1><p class="message">${html(message)}</p><p class="foot">请返回客户端后重新发起购买。</p></main></body></html>` }
   renderPaid(summary) { return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>支付成功</title><style>${this.css()}</style></head><body><main><p class="eyebrow">CANGSHUO · PAYMENT SUCCESS</p><h1>支付成功，授权已开通</h1><section class="order"><div><span>功能</span><strong>${html(summary.moduleName)}</strong></div><div><span>授权至</span><strong>${html(this.time(summary.validUntil))}</strong></div></section><p class="message">请返回客户端刷新功能商城，再自行启用该功能。</p></main></body></html>` }
-  renderJsapi(params,token,origin) { const json = JSON.stringify(params).replaceAll('<','\\u003c'),paymentDirectory=JSON.stringify(`${origin}/api/pay/wx/`).replaceAll('<','\\u003c'); return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>微信支付</title><style>${this.css()}</style></head><body><main><p class="eyebrow">WECHAT PAY</p><h1>正在连接微信支付</h1><p id="message" class="message">请稍候…</p><button class="primary" id="retry">重新发起支付</button></main><script>const params=${json};const token=${JSON.stringify(token)};const paymentDirectory=${paymentDirectory};const message=document.getElementById('message');function invoke(){if(typeof WeixinJSBridge==='undefined'){message.textContent='请在微信客户端中打开本页面完成支付';return}WeixinJSBridge.invoke('getBrandWCPayRequest',params,res=>{const error=String(res.err_msg||'');if(error==='get_brand_wcpay_request:ok'){message.textContent='支付成功，授权处理中…';location.href='/pay/'+encodeURIComponent(token)+'?paid=1'}else if(error==='get_brand_wcpay_request:cancel'){message.textContent='已取消支付，可点击下方重新发起'}else if(/URL.*未注册|url.*unregistered/i.test(error)){message.textContent='微信商户后台尚未登记支付授权目录：'+paymentDirectory}else{message.textContent='支付未完成，请重新发起'}})}document.getElementById('retry').onclick=invoke;if(document.readyState==='complete')invoke();else document.addEventListener('WeixinJSBridgeReady',invoke,false);</script></body></html>` }
+  renderJsapi(params, returnPath, origin) {
+    const json = value => JSON.stringify(value).replaceAll('<','\\u003c')
+    return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>微信支付</title><style>${this.css()}</style></head><body><main><h1>正在连接微信支付</h1><p id="message" class="message" role="status">请稍候…</p><button class="primary" id="retry" disabled>重新发起支付</button></main><script>
+      const params=${json(params)}, returnPath=${json(returnPath)}, paymentDirectory=${json(origin+'/api/pay/wx/')};
+      const message=document.getElementById('message'),retry=document.getElementById('retry');
+      let pending=false, finished=false;
+      function invoke(){
+        if(pending||finished||typeof WeixinJSBridge==='undefined')return;
+        pending=true; retry.disabled=true;
+        WeixinJSBridge.invoke('getBrandWCPayRequest',params,res=>{
+          pending=false;
+          const error=String(res.err_msg||'');
+          if(error==='get_brand_wcpay_request:ok'){
+            finished=true; message.textContent='正在确认支付结果…'; location.replace(returnPath+'?paid=1'); return;
+          }
+          retry.disabled=false;
+          message.textContent=error==='get_brand_wcpay_request:cancel'?'已取消，可重新发起支付':/URL.*未注册|url.*unregistered/i.test(error)?'请检查微信支付授权目录：'+paymentDirectory:'支付未完成，请重试';
+        });
+      }
+      retry.onclick=invoke;
+      if(typeof WeixinJSBridge!=='undefined')invoke();
+      else {
+        document.addEventListener('WeixinJSBridgeReady',invoke,{once:true});
+        setTimeout(()=>{if(typeof WeixinJSBridge==='undefined')message.textContent='请在手机微信中打开此页面完成支付'},3000);
+      }
+    </script></body></html>`
+  }
 }

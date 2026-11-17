@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { fail } from './store.mjs'
+import { packageMethods, packageOfficialContext, prepayPackageOfficial, renderPackageCheckout, validatePackageNotification } from './package-checkout.mjs'
 
 export class SmsPackagePaymentService {
   constructor(store, { sms, payments }) {
@@ -15,15 +16,13 @@ export class SmsPackagePaymentService {
     if (order.status === 'GRANTED') fail('该套餐已经发放，请不要重复购买', 409)
     const provider = this.store.db.prepare('SELECT p.payment_provider,p.payment_methods,pay.enabled,pay.methods FROM sms_package_orders o JOIN projects p ON p.id=o.project_id LEFT JOIN payment_providers pay ON pay.id=p.payment_provider WHERE o.id=?').get(order.id)
     if (!provider?.payment_provider || provider.enabled !== 1) fail('授权中心尚未启用可用于套餐购买的支付通道', 503)
-    const methods = JSON.parse(provider.payment_methods || '[]').filter(method => JSON.parse(provider.methods || '[]').includes(method) && ['NATIVE'].includes(method))
-    if (!methods.length) fail('套餐购买当前需要启用微信 Native 扫码支付', 503)
-    const config = this.payments.wechatConfig(true)
-    if (!config.appId && !config.officialAppId) fail('微信支付 AppID 未配置', 503)
+    const methods = packageMethods(provider.methods, provider.payment_methods, this.payments)
+    if (!methods.length) fail('套餐购买需在授权中心和项目中启用公众号支付或微信 Native', 503)
     const token = randomBytes(32).toString('base64url')
     const expiresAt = Date.now() + 30 * 60 * 1000
     this.store.db.prepare('INSERT INTO sms_package_checkout_sessions(token_hash,package_order_id,expires_at,created_at) VALUES (?,?,?,?)')
       .run(this.hash(token), order.id, expiresAt, new Date().toISOString())
-    return { checkoutUrl: new URL('/pay/sms-package/' + token, baseUrl).href, methods: ['NATIVE'], orderId: order.id, packageName: order.product.name, amountCents: order.amount_cents }
+    return { checkoutUrl: new URL('/pay/sms-package/' + token, baseUrl).href, methods, orderId: order.id, packageName: order.product.name, amountCents: order.amount_cents }
   }
 
   summary(token) {
@@ -31,10 +30,11 @@ export class SmsPackagePaymentService {
       .get(this.hash(this.payments.validateToken(token)))
     if (!row) fail('套餐支付链接不存在或已失效', 404)
     if (row.expires_at <= Date.now()) fail('套餐支付链接已过期，请重新发起购买', 410)
-    const enabled = row.provider_enabled === 1 ? JSON.parse(row.provider_methods || '[]') : []
-    const methods = enabled.filter(method => method === 'NATIVE' && JSON.parse(row.project_methods || '[]').includes(method))
-    let paymentReady = false
-    try { this.payments.wechatConfig(true); paymentReady = methods.length > 0 } catch {}
+    let methods = []
+    try {
+      if (row.provider_enabled === 1) methods = packageMethods(row.provider_methods, row.project_methods, this.payments)
+    } catch {}
+    const paymentReady = methods.length > 0
     return { orderId: row.order_id, packageName: row.package_name, amountCents: row.amount_cents, messageCount: row.message_count, validityDays: row.validity_days, projectName: row.project_name, customerName: row.customer_name, status: row.granted_at ? 'GRANTED' : row.status, paidAt: row.paid_at, grantedAt: row.granted_at, expiresAt: new Date(row.expires_at).toISOString(), methods, paymentReady }
   }
 
@@ -52,11 +52,11 @@ export class SmsPackagePaymentService {
     const context = this.context(token)
     if (context.summary.status === 'GRANTED') return null
     if (context.summary.status === 'PAID') fail('套餐已收款，正在确认发放，请勿再次支付', 409)
-    if (!context.summary.paymentReady) fail('短信套餐扫码支付未启用', 503)
+    if (!context.summary.methods.includes('NATIVE')) fail('短信套餐扫码支付未启用', 503)
     const config = this.payments.wechatConfig(true)
     let payment = context.payment
     if (!payment) {
-      const outTradeNo = 'SMSPKG' + Date.now() + randomBytes(8).toString('hex')
+      const outTradeNo = 'SMSPKG' + randomUUID().replaceAll('-', '').slice(0, 26)
       payment = { id: randomUUID(), package_order_id: context.row.order_id, out_trade_no: outTradeNo, amount_cents: context.row.amount_cents, method: 'NATIVE', status: 'UNPAID', created_at: new Date().toISOString() }
       this.store.db.prepare('INSERT INTO sms_package_payments(id,package_order_id,out_trade_no,method,amount_cents,status,created_at) VALUES (?,?,?,?,?,?,?)')
         .run(payment.id, payment.package_order_id, payment.out_trade_no, 'NATIVE', payment.amount_cents, 'UNPAID', new Date().toISOString())
@@ -77,24 +77,17 @@ export class SmsPackagePaymentService {
     return { method: 'NATIVE', codeUrl: data.code_url }
   }
 
-  async page(token) {
-    let summary
-    try { summary = this.summary(token) } catch (error) { return this.payments.renderMessage(error.message || '套餐支付链接无效') }
-    if (summary.status === 'GRANTED') return '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>套餐支付成功</title><style>' + this.payments.css() + '</style></head><body><main><p class="eyebrow">CANGSHUO · SMS PACKAGE</p><h1>支付成功，套餐已发放</h1><section class="order"><div><span>套餐</span><strong>' + escapeHtml(summary.packageName) + '</strong></div><div><span>条数</span><strong>' + summary.messageCount + ' 条</strong></div></section><p class="message">请返回客户后台刷新短信服务页面。</p></main></body></html>'
-    if (!summary.paymentReady) return this.payments.renderMessage('授权中心尚未完成微信 Native 支付配置，请联系维护人员')
-    let codeUrl
-    try { codeUrl = (await this.prepay(token))?.codeUrl } catch (error) { return this.payments.renderMessage(error.message || '微信支付暂不可用') }
-    if (!codeUrl) return this.payments.renderMessage('套餐支付暂不可用')
-    const scanSvg = await this.payments.qr.toString(codeUrl, { type: 'svg', margin: 1, width: 230, color: { dark: '#111827', light: '#ffffff' } })
-    return '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>短信套餐收款 · 沧烁授权中心</title><style>' + this.payments.css() + '</style></head><body><main><p class="eyebrow">CANGSHUO · SMS PACKAGE</p><h1>短信套餐收款</h1><section class="order"><div><span>套餐</span><strong>' + escapeHtml(summary.packageName) + '</strong></div><div><span>客户</span><strong>' + escapeHtml(summary.customerName) + ' · ' + escapeHtml(summary.projectName) + '</strong></div><div><span>支付金额</span><strong class="price">¥' + (summary.amountCents / 100).toFixed(2) + '</strong></div><div><span>条数</span><strong>' + summary.messageCount + ' 条</strong></div></section><section class="pay-box"><h2>微信扫码支付</h2><div class="scan">' + scanSvg + '<p>使用微信扫码完成支付</p></div><p id="message" class="message">付款完成后套餐会自动发放。</p></section><p class="foot">支付由沧烁授权中心统一收取。</p></main><script>const token=' + JSON.stringify(token) + ';setInterval(async()=>{try{const r=await fetch("/api/checkout/sms-package/"+encodeURIComponent(token),{cache:"no-store"});const j=await r.json();if(j.status==="GRANTED")location.reload()}catch{}},3000);</script></body></html>'
-  }
+  officialContext(token) { return packageOfficialContext(this, token) }
+
+  prepayOfficial(token, openid) { return prepayPackageOfficial(this, token, openid, 'sms', '短信套餐') }
+
+  page(token, request, baseUrl) { return renderPackageCheckout(this, token, request, baseUrl, 'sms') }
 
   async notification(transaction, config) {
     return this.store.transaction(() => {
       const payment = this.store.db.prepare('SELECT p.*,o.amount_cents AS order_amount,o.status AS order_status,o.granted_at FROM sms_package_payments p JOIN sms_package_orders o ON o.id=p.package_order_id WHERE p.out_trade_no=?').get(transaction.out_trade_no)
       if (!payment) return null
-      if (transaction.mchid !== config.merchantId || !([config.officialAppId, config.appId].filter(Boolean).includes(transaction.appid))) fail('微信支付通知商户或 AppID 不匹配', 409)
-      if (transaction.amount?.total !== payment.order_amount || (transaction.amount?.currency && transaction.amount.currency !== 'CNY')) fail('微信支付通知金额不匹配', 409)
+      validatePackageNotification(transaction, payment, config)
       if (!transaction.transaction_id || transaction.transaction_id.length > 128) fail('微信支付交易号无效', 409)
       if (payment.status === 'PAID') {
         if (payment.transaction_id !== transaction.transaction_id) fail('微信支付交易号冲突', 409)
@@ -106,8 +99,4 @@ export class SmsPackagePaymentService {
       return { paid: true, smsPackage: true, orderId: payment.package_order_id }
     })
   }
-}
-
-function escapeHtml(value) {
-  return String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;')
 }

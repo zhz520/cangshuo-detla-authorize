@@ -1,3 +1,4 @@
+import { isMobileWechat, checkoutPath } from './checkout-scene.mjs'
 import { createServer } from 'node:http'
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import { readFile, stat } from 'node:fs/promises'
@@ -104,14 +105,31 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
         const ip=String(request.headers['x-forwarded-for']||request.socket.remoteAddress||'').split(',',1)[0].trim()
         return json(await payments.prepay(checkoutMatch[1],body.method,{clientIp:ip}))
       }
-      if(route==='/api/pay/wx/oauth'&&method==='GET'){
-        const target=payments.oauthUrl(String(url.searchParams.get('token')||''),requestBaseUrl(request))
-        response.writeHead(302,{Location:target});return response.end()
-      }
-      if(route==='/api/pay/wx/oauth-callback'&&method==='GET'){
-        response.setHeader('Content-Security-Policy',"default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'")
-        response.writeHead(200,{ 'Content-Type':'text/html; charset=utf-8' })
-        return response.end(await payments.oauthCallback(String(url.searchParams.get('token')||''),String(url.searchParams.get('code')||'')))
+      if ((route === '/api/pay/wx/oauth' || route === '/api/pay/wx/oauth-callback') && method === 'GET') {
+        response.setHeader('Referrer-Policy', 'no-referrer')
+        const token = String(url.searchParams.get('token') || '')
+        const kind = String(url.searchParams.get('kind') || '')
+        let page, status = 200
+        try {
+          payments.validateToken(token)
+          if (!['', 'sms', 'identity'].includes(kind)) fail('支付类型无效', 400)
+          if (!isMobileWechat(request.headers['user-agent'])) {
+            response.writeHead(302, { Location: checkoutPath(token, kind) })
+            return response.end()
+          }
+          if (route === '/api/pay/wx/oauth') {
+            response.writeHead(302, { Location: payments.oauthUrl(token, { kind }) })
+            return response.end()
+          }
+          if (!equal(token, url.searchParams.get('state'))) fail('微信授权状态已失效，请返回收款页重试', 400)
+          page = await payments.oauthCallback(token, String(url.searchParams.get('code') || ''), kind)
+        } catch (error) {
+          status = error instanceof HttpError ? error.status : 502
+          page = payments.renderMessage(error instanceof HttpError ? error.message : '微信支付暂不可用，请返回收款页重试')
+        }
+        response.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'")
+        response.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8' })
+        return response.end(page)
       }
       if(route==='/api/pay/wx/notify'&&method==='POST'){
         const result=await payments.notification(request.headers,rawBody)
@@ -120,8 +138,9 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
       const payMatch=route.match(/^\/pay\/([A-Za-z0-9_-]{43})$/)
       if(payMatch&&method==='GET'){
         response.setHeader('Content-Security-Policy',"default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'")
+        const page = await payments.page(payMatch[1],request,requestBaseUrl(request))
         response.writeHead(200,{ 'Content-Type':'text/html; charset=utf-8' })
-        return response.end(await payments.page(payMatch[1],request,requestBaseUrl(request)))
+        return response.end(page)
       }
       let publicMatch = route.match(/^\/public\/release-notes\/([\w-]+)\/([^/]+)$/)
       if (publicMatch && method === 'GET') {
@@ -164,8 +183,9 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
       let smsPackagePayMatch = route.match(/^\/pay\/sms-package\/([A-Za-z0-9_-]{43})$/)
       if (smsPackagePayMatch && method === 'GET') {
         response.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; script-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
+        const page = await payments.smsPackagePayments.page(smsPackagePayMatch[1], request, requestBaseUrl(request))
         response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
-        return response.end(await payments.smsPackagePayments.page(smsPackagePayMatch[1]))
+        return response.end(page)
       }
       smsPackagePayMatch = route.match(/^\/api\/checkout\/sms-package\/([A-Za-z0-9_-]{43})$/)
       if (smsPackagePayMatch && method === 'GET') return json(payments.smsPackagePayments.summary(smsPackagePayMatch[1]))
@@ -174,8 +194,9 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
       let identityPackagePayMatch = route.match(/^\/pay\/identity-package\/([A-Za-z0-9_-]{43})$/)
       if (identityPackagePayMatch && method === 'GET') {
         response.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; script-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
+        const page = await payments.identityPackagePayments.page(identityPackagePayMatch[1], request, requestBaseUrl(request))
         response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
-        return response.end(await payments.identityPackagePayments.page(identityPackagePayMatch[1]))
+        return response.end(page)
       }
       identityPackagePayMatch = route.match(/^\/api\/checkout\/identity-package\/([A-Za-z0-9_-]{43})$/)
       if (identityPackagePayMatch && method === 'GET') return json(payments.identityPackagePayments.summary(identityPackagePayMatch[1]))

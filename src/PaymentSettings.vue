@@ -37,7 +37,7 @@
 
       <section class="method-section">
         <div class="method-heading">
-          <div><h4>支持的支付方式</h4><p>按项目需要独立开放，不依据浏览器或 User-Agent 自动切换。</p></div>
+          <div><h4>支持的支付方式</h4><p>按项目独立开放。启用公众号支付后，手机微信直接支付，其他浏览器显示二维码。</p></div>
           <span>{{ paymentForms[provider.id].methods.length }} 项已选</span>
         </div>
         <el-checkbox-group v-model="paymentForms[provider.id].methods" class="method-grid">

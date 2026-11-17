@@ -42,3 +42,6 @@ jobs:
       - run: npm run test:browser
         env:
           E2E_OUTPUT: ${{ runner.temp }}/authority-browser
+      - run: node test/e2e-payment-page.mjs
+        env:
+          QA_OUTPUT: ${{ runner.temp }}/payment-browser

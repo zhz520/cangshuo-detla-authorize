@@ -54,7 +54,7 @@
 - 服务端密钥：必须配置 `AUTHORITY_SMS_MASTER_KEY`（32 字节 base64/hex）；短信 Secret 和实例客户端 Secret 使用 AES-256-GCM 加密保存。
 - 模板：客户提交 `templateKey` 和变量，阿里云模板 Code、签名和变量规则由授权中心维护。
 - 计费模式：项目级支持 `METERED`（只按条）、`PACKAGE`（只套餐）和 `HYBRID`（套餐优先，余额兜底）。
-- 套餐：授权中心可配置条数包、价格、有效期和适用项目，支持运营人工发放和客户后台 Native 微信扫码购买；支付回调成功后自动发放，套餐和余额均写只追加账本。
+- 套餐：可配置额度、价格、有效期和适用项目。短信与实名套餐支持公众号支付（手机微信直付、其他浏览器扫码）及原有 Native 通道；以支付回调确认后发放为准。详见[微信支付配置](docs/wechat-payment-configuration.md#p0-固定规则公众号支付按终端展示)。
 - 客户端接入：在实例接入页生成/轮换 client secret，服务端使用 `X-SMS-Instance`、`X-SMS-Timestamp`、`X-SMS-Nonce` 和 `X-SMS-Signature` 签名请求。
 - 发送接口：`POST /api/sms/v1/send`；账户接口：`GET /api/sms/v1/account`；请求查询：`GET /api/sms/v1/requests/:id`。
 - 发送结果未知时保留预占，不使用同一逻辑消息自动重发；运营可在用量页释放未知请求，或后续接入阿里云查询后对账。

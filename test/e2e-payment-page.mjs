@@ -37,11 +37,34 @@ try{
   const token=JSON.parse(Buffer.from(checkout.checkout.payload,'base64url')).checkoutUrl.split('/').pop()
   const browser=await chromium.launch({headless:true,...(process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{})})
   try{
-    for(const item of [{name:'Desktop',options:{viewport:{width:1024,height:900}}},{name:'Mobile-WeChat',options:{...devices['iPhone 13'],userAgent:devices['iPhone 13'].userAgent+' MicroMessenger/8.0.60'}}]){
+    for(const item of [
+      {name:'Desktop',options:{viewport:{width:1024,height:900}}},
+      {name:'Desktop-WeChat',options:{viewport:{width:1024,height:900},userAgent:'Mozilla/5.0 (Windows NT 10.0) MicroMessenger/8.0 WindowsWechat'}},
+      {name:'Mobile-Browser',options:devices['iPhone 13']},
+      {name:'Mobile-WeChat',direct:true,options:{...devices['iPhone 13'],userAgent:devices['iPhone 13'].userAgent+' MicroMessenger/8.0.60'}}
+    ]){
       const context=await browser.newContext(item.options);const page=await context.newPage();const errors=[];page.on('pageerror',error=>errors.push(error.message))
-      await page.goto(`${origin}/pay/${token}`);await expect(page.getByRole('heading',{name:'功能授权收款'})).toBeVisible();await expect(page.getByText('¥99.00')).toBeVisible();
-      if(item.name==='Desktop')await expect(page.getByText('使用微信扫码')).toBeVisible();else await expect(page.getByRole('link',{name:'微信支付'})).toBeVisible()
+      let oauthRequest
+      await context.route('**/api/pay/wx/oauth?*',async route=>{
+        const redirected = await route.fetch({maxRedirects:0})
+        assert.equal(redirected.status(),302)
+        oauthRequest = new URL(redirected.headers().location)
+        assert.equal(oauthRequest.hostname,'open.weixin.qq.com')
+        await route.fulfill({contentType:'text/html; charset=utf-8',body:'<h1>模拟微信网页授权</h1>'})
+      })
+      await page.goto(`${origin}/pay/${token}`)
+      if(item.direct){
+        await expect(page.getByRole('heading',{name:'模拟微信网页授权'})).toBeVisible()
+        assert.equal(oauthRequest?.searchParams.get('scope'),'snsapi_base')
+      }else{
+        await expect(page.getByRole('heading',{name:'功能授权收款'})).toBeVisible()
+        await expect(page.getByText('¥99.00')).toBeVisible()
+        await expect(page.locator('.scan svg')).toBeVisible()
+        await expect(page.locator('#official-pay')).toHaveCount(0)
+        assert.equal(oauthRequest,undefined)
+      }
       assert.deepEqual(errors,[]);await page.screenshot({path:path.join(output,`payment-checkout-${item.name}.png`),fullPage:true,animations:'disabled'});await context.close()
+      console.log(item.name+': PASS')
     }
   }finally{await browser.close()}
 }finally{await new Promise(resolve=>server.close(resolve));store.close();if(path.dirname(path.resolve(directory))===path.resolve(base))rmSync(directory,{recursive:true,force:true})}

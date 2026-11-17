@@ -4,13 +4,13 @@ import {readFile} from 'node:fs/promises'
 
 const read = path => readFile(new URL(path, import.meta.url), 'utf8')
 
-test('payment configuration uses independent methods and contains no browser auto-detection copy', async () => {
+test('payment configuration explains official checkout without conflating project switches', async () => {
   const ops = await read('../src/Operations.vue')
   const payments = await read('../src/PaymentSettings.vue')
   assert.match(ops, /PaymentSettings/)
   assert.doesNotMatch(ops, /paymentForms|uploadPaymentKey|payment-card/)
   assert.match(payments, /支付方式彼此独立/)
-  assert.match(payments, /不依据浏览器或 User-Agent 自动切换/)
+  assert.match(payments, /手机微信直接支付，其他浏览器显示二维码/)
   assert.match(payments, /项目支付接入/)
   assert.match(payments, /uploadPaymentKey/)
   assert.match(payments, /上传文件/)

@@ -11,7 +11,7 @@ export const PAYMENT_METHOD_LABELS = Object.freeze({
 export const PAYMENT_METHOD_DESCRIPTIONS = Object.freeze({
   H5: '手机或电脑浏览器打开微信支付',
   JSAPI: '微信小程序内直接调起支付',
-  OFFICIAL: '微信公众号网页内支付',
+  OFFICIAL: '手机微信直接支付，其他浏览器显示二维码',
   NATIVE: '电脑浏览器展示收款二维码',
   APP: '原生 App 内调起支付'
 })
