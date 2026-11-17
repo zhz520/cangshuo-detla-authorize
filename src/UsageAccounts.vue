@@ -6,14 +6,19 @@
         <el-tag :type="provider.configured ? 'success' : 'info'">{{ provider.configured ? '已配置' : '未启用' }}</el-tag>
       </header>
       <el-alert class="provider-guide" type="info" :closable="false" show-icon
-        :title="provider.mode === 'TENCENT_FACEID' ? '腾讯云二要素由授权中心直接调用' : '填写服务商提供的 HTTPS 核验接口'"
-        :description="provider.mode === 'TENCENT_FACEID' ? '授权中心使用腾讯云 IdCardVerification 接口，只需填写腾讯云 API 密钥，不需要自建转发服务。' : '接口需接受 POST JSON：{ name, idNumber }，并返回 { matched: true|false, requestId }；令牌通过 Authorization: Bearer 发送。'" />
+        :title="provider.mode === 'ALIYUN_CLOUD_AUTH' ? '阿里云身份二要素由授权中心直接调用' : provider.mode === 'TENCENT_FACEID' ? '腾讯云二要素由授权中心直接调用' : '填写服务商提供的 HTTPS 核验接口'"
+        :description="provider.mode === 'ALIYUN_CLOUD_AUTH' ? '授权中心调用阿里云 cloudauth Id2MetaVerify，后付费 0.2 元/次；只有核验一致/不一致计费，接口异常或无记录不扣费。只需填写阿里云 AccessKey。' : provider.mode === 'TENCENT_FACEID' ? '授权中心使用腾讯云 IdCardVerification 接口，只需填写腾讯云 API 密钥，不需要自建转发服务。' : '接口需接受 POST JSON：{ name, idNumber }，并返回 { matched: true|false, requestId }；令牌通过 Authorization: Bearer 发送。'" />
       <el-form label-position="top" class="identity-provider-form" :disabled="loading || savingProvider">
         <el-row :gutter="16">
-          <el-col :xs="24" :md="12"><el-form-item label="服务商类型"><el-select v-model="provider.mode"><el-option label="腾讯云二要素（推荐）" value="TENCENT_FACEID" /><el-option label="自定义 HTTPS 接口" value="CUSTOM" /></el-select></el-form-item></el-col>
+          <el-col :xs="24" :md="12"><el-form-item label="服务商类型"><el-select v-model="provider.mode"><el-option label="阿里云二要素（推荐）" value="ALIYUN_CLOUD_AUTH" /><el-option label="腾讯云二要素" value="TENCENT_FACEID" /><el-option label="自定义 HTTPS 接口" value="CUSTOM" /></el-select></el-form-item></el-col>
           <el-col :xs="24" :md="12"><el-form-item label="启用实名供应商"><el-switch v-model="provider.enabled" /></el-form-item></el-col>
         </el-row>
-        <el-row v-if="provider.mode === 'TENCENT_FACEID'" :gutter="16">
+        <el-row v-if="provider.mode === 'ALIYUN_CLOUD_AUTH'" :gutter="16">
+          <el-col :xs="24" :md="12"><el-form-item label="阿里云 AccessKey ID"><el-input v-model="provider.secretId" autocomplete="off" /></el-form-item></el-col>
+          <el-col :xs="24" :md="12"><el-form-item label="阿里云 AccessKey Secret"><el-input v-model="provider.secretKey" type="password" show-password autocomplete="new-password" :placeholder="provider.hasSecretKey ? '已保存，留空保留原值' : '填写阿里云 AccessKey Secret'" /></el-form-item></el-col>
+          <el-col :xs="24" :md="12"><el-form-item label="接口"><el-input model-value="cloudauth.aliyuncs.com" readonly /></el-form-item></el-col>
+        </el-row>
+        <el-row v-else-if="provider.mode === 'TENCENT_FACEID'" :gutter="16">
           <el-col :xs="24" :md="12"><el-form-item label="腾讯云 SecretId"><el-input v-model="provider.secretId" autocomplete="off" /></el-form-item></el-col>
           <el-col :xs="24" :md="12"><el-form-item label="腾讯云 SecretKey"><el-input v-model="provider.secretKey" type="password" show-password autocomplete="new-password" :placeholder="provider.hasSecretKey ? '已保存，留空保留原值' : '填写腾讯云 API 密钥'" /></el-form-item></el-col>
           <el-col :xs="24" :md="12"><el-form-item label="地域"><el-input v-model="provider.region" placeholder="ap-guangzhou" /></el-form-item></el-col>
@@ -133,7 +138,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 const props = defineProps({ api: Function })
 const rows = ref([]), packages = ref([]), loading = ref(false), saving = ref(false)
-const provider = reactive({mode:'TENCENT_FACEID',url:'',token:'',hasToken:false,secretId:'',secretKey:'',hasSecretKey:false,region:'ap-guangzhou',enabled:false,configured:false})
+const provider = reactive({mode:'ALIYUN_CLOUD_AUTH',url:'',token:'',hasToken:false,secretId:'',secretKey:'',hasSecretKey:false,region:'ap-guangzhou',enabled:false,configured:false})
 const savingProvider=ref(false)
 const current = ref(null), accountVisible = ref(false), creditVisible = ref(false), grantVisible = ref(false)
 const detailVisible = ref(false), detailTab = ref('requests'), requests = ref([]), ledger = ref([])
@@ -163,7 +168,7 @@ async function load() {
   try {
     const [accounts, offers, settings] = await Promise.all([props.api('/usage/accounts'), props.api('/identity/packages'), props.api('/usage/provider')])
     rows.value=accounts; packages.value=offers
-    Object.assign(provider,{mode:'TENCENT_FACEID',region:'ap-guangzhou'},settings,{token:'',secretKey:''})
+    Object.assign(provider,{mode:'ALIYUN_CLOUD_AUTH',region:'ap-guangzhou'},settings,{token:'',secretKey:''})
   }
   catch (error) { ElMessage.error(error.message) }
   finally { loading.value = false }
@@ -171,9 +176,11 @@ async function load() {
 async function saveProvider() {
   savingProvider.value=true
   try {
-    const body = provider.mode === 'TENCENT_FACEID'
-      ? {mode:'TENCENT_FACEID',secretId:provider.secretId,secretKey:provider.secretKey,region:provider.region,enabled:provider.enabled}
-      : {mode:'CUSTOM',url:provider.url,token:provider.token,enabled:provider.enabled}
+    const body = provider.mode === 'ALIYUN_CLOUD_AUTH'
+      ? {mode:'ALIYUN_CLOUD_AUTH',secretId:provider.secretId,secretKey:provider.secretKey,enabled:provider.enabled}
+      : provider.mode === 'TENCENT_FACEID'
+        ? {mode:'TENCENT_FACEID',secretId:provider.secretId,secretKey:provider.secretKey,region:provider.region,enabled:provider.enabled}
+        : {mode:'CUSTOM',url:provider.url,token:provider.token,enabled:provider.enabled}
     Object.assign(provider,await props.api('/usage/provider',{method:'PUT',body}),{token:'',secretKey:''})
     ElMessage.success('实名供应商配置已保存')
   } catch(error) { ElMessage.error(error.message) }

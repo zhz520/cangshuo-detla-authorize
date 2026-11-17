@@ -4,7 +4,7 @@ import { generateKeyPairSync, randomBytes } from 'node:crypto'
 import { AuthorityStore } from '../server/store.mjs'
 import { SmsService } from '../server/sms.mjs'
 import { createAuthorityServer } from '../server/http.mjs'
-import { providerEndpoint,publicAddress,mapTencentResult,tencentAuthorization } from '../server/identity-provider-settings.mjs'
+import { providerEndpoint,publicAddress,mapTencentResult,tencentAuthorization,aliyunRpcSignature,mapAliyunResult } from '../server/identity-provider-settings.mjs'
 
 test('external identity endpoints must use a public TLS destination', ()=>{
   for(const url of ['http://provider.example.org','https://127.0.0.1','https://metadata.internal/v1','https://192.168.1.1','https://provider.example.org/v1?token=test','https://provider.example.org:8080/v1']) assert.throws(()=>providerEndpoint(url))
@@ -84,4 +84,35 @@ test('Tencent TC3 signature matches the pinned canonical request vector', ()=>{
   const signed=tencentAuthorization({secretId:'AKID-test',secretKey:'secret-test',timestamp:1551113065,payload})
   assert.equal(signed.date,'2019-02-25')
   assert.equal(signed.authorization,'TC3-HMAC-SHA256 Credential=AKID-test/2019-02-25/faceid/tc3_request, SignedHeaders=content-type;host, Signature=78d8fb46d361b9f106e8c5f52cca687bf732cc026c478cddfa50ef7604702035')
+})
+
+test('Aliyun Id2MetaVerify signing and result mapping distinguish billed and unbilled outcomes', ()=>{
+  const signed=aliyunRpcSignature({accessKeyId:'LTAI-test',accessKeySecret:'secret-test',params:{IdentifyNum:'11010519491231002X',UserName:'张三'},nonce:'nonce-test-1234',timestamp:'2026-11-17T12:00:00Z'})
+  assert.equal(signed.signature,'SytHiYD37l4zaphobx+Ck2sE0Yg=')
+  assert.deepEqual(mapAliyunResult({Code:'200',ResultObject:{BizCode:'1'},RequestId:'req-a'}),{matched:true,reference:'req-a'})
+  assert.deepEqual(mapAliyunResult({Code:'200',ResultObject:{BizCode:'2'},RequestId:'req-b'}),{matched:false,reference:'req-b'})
+  assert.throws(()=>mapAliyunResult({Code:'200',ResultObject:{BizCode:'3'}}),/无此身份证记录/)
+  assert.throws(()=>mapAliyunResult({Code:'400',Message:'InvalidAccessKeyId.NotFound'}),/AccessKey/)
+  assert.throws(()=>mapAliyunResult({Code:'500',Message:'service error'}),/暂时不可用/)
+})
+
+test('Aliyun Cloud Auth credentials are encrypted and redacted', async ()=>{
+  const {privateKey}=generateKeyPairSync('ed25519',{privateKeyEncoding:{type:'pkcs8',format:'pem'}})
+  const store=new AuthorityStore({database:':memory:',privateKey,ownerUsername:'owner',ownerPassword:'provider-test-password'})
+  const sms=new SmsService(store,{masterKey:randomBytes(32).toString('base64')})
+  const server=createAuthorityServer(store,{sms})
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve))
+  const base='http://127.0.0.1:'+server.address().port
+  const send=(path,body,headers={})=>fetch(base+path,{method:'PUT',headers:{'content-type':'application/json',...headers},body:JSON.stringify(body)})
+  try {
+    const login=await fetch(base+'/api/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:'owner',password:'provider-test-password'})})
+    const cookie=login.headers.get('set-cookie').split(';')[0]
+    const {csrf}=await login.json()
+    const headers={cookie,'x-csrf-token':csrf}
+    const payload={mode:'ALIYUN_CLOUD_AUTH',secretId:'LTAI-test',secretKey:'aliyun-secret',enabled:true}
+    const provider=await send('/api/usage/provider',payload,headers)
+    assert.equal(provider.status,200)
+    assert.deepEqual(await provider.json(),{mode:'ALIYUN_CLOUD_AUTH',url:'cloudauth.aliyuncs.com',hasToken:false,secretId:'LTAI-test',hasSecretKey:true,region:'ap-guangzhou',endpoint:'cloudauth.aliyuncs.com',enabled:true,configured:true})
+    assert.notEqual(store.db.prepare('SELECT secret_key_cipher FROM identity_provider_settings').get().secret_key_cipher,'aliyun-secret')
+  } finally { await new Promise(resolve=>server.close(resolve));store.close() }
 })

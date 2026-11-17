@@ -1,4 +1,4 @@
-import { createHash, createHmac } from 'node:crypto'
+import { createHash, createHmac, randomUUID } from 'node:crypto'
 import { lookup } from 'node:dns'
 import { request } from 'node:https'
 import { BlockList, isIP } from 'node:net'
@@ -8,8 +8,10 @@ import { open, seal } from './sms.mjs'
 const TENCENT_HOST = 'faceid.tencentcloudapi.com'
 const TENCENT_SERVICE = 'faceid'
 const TENCENT_VERSION = '2018-03-01'
+const ALIYUN_HOST = 'cloudauth.aliyuncs.com'
+const ALIYUN_VERSION = '2019-03-07'
 const TENCENT_REGION = /^[a-z0-9-]{2,32}$/
-const MODES = new Set(['TENCENT_FACEID', 'CUSTOM'])
+const MODES = new Set(['ALIYUN_CLOUD_AUTH', 'TENCENT_FACEID', 'CUSTOM'])
 
 const blocked = new BlockList()
 for (const [address, bits] of [['0.0.0.0',8],['10.0.0.0',8],['100.64.0.0',10],['127.0.0.0',8],['169.254.0.0',16],
@@ -125,6 +127,68 @@ export function postTencentJson({ secretId, secretKey, region, realName, idNumbe
   })
 }
 
+export function percentEncode(value) {
+  return encodeURIComponent(String(value)).replace(/[!'()*]/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase())
+}
+
+export function aliyunRpcSignature({ accessKeyId, accessKeySecret, params = {}, method = 'POST',
+  nonce = randomUUID(), timestamp = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z') }) {
+  const all = {
+    AccessKeyId: accessKeyId,
+    Action: 'Id2MetaVerify',
+    Format: 'JSON',
+    SignatureMethod: 'HMAC-SHA1',
+    SignatureNonce: nonce,
+    SignatureVersion: '1.0',
+    Timestamp: timestamp,
+    Version: ALIYUN_VERSION,
+    ParamType: 'normal',
+    ...params
+  }
+  const canonical = Object.keys(all).sort().map(key => percentEncode(key) + '=' + percentEncode(all[key])).join('&')
+  const stringToSign = method + '&' + percentEncode('/') + '&' + percentEncode(canonical)
+  const signature = createHmac('sha1', accessKeySecret + '&').update(stringToSign).digest('base64')
+  return { body: canonical + '&Signature=' + percentEncode(signature), signature }
+}
+
+export function postAliyunJson({ accessKeyId, accessKeySecret, realName, idNumber, timeout = 8000 }) {
+  return new Promise((resolve, reject) => {
+    const signed = aliyunRpcSignature({ accessKeyId, accessKeySecret, params: { IdentifyNum: idNumber, UserName: realName } })
+    const body = Buffer.from(signed.body)
+    const req = request({
+      hostname: ALIYUN_HOST, port: 443, path: '/', method: 'POST', agent: false, family: 4, timeout,
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        'content-length': body.length,
+        host: ALIYUN_HOST
+      }
+    }, response => responseJson(resolve, reject, response, [], 0))
+    req.on('timeout', () => req.destroy(new Error('identity_provider_timeout')))
+    req.on('error', reject)
+    req.end(body)
+  })
+}
+
+export function mapAliyunResult(body) {
+  if (!body || typeof body !== 'object') throw new Error('identity_response_invalid')
+  const code = String(body.Code ?? '')
+  if (code !== '200') {
+    if (/InvalidAccessKeyId|SignatureDoesNotMatch|Forbidden|Unauthorized/i.test(code + ' ' + String(body.Message || '')))
+      fail('阿里云实名 AccessKey 或权限不正确，请检查 AccessKey 和信息核验服务授权', 503)
+    fail('实名核验服务暂时不可用，请稍后重试', 503)
+  }
+  const biz = String(body.ResultObject?.BizCode ?? '')
+  const reference = typeof body.RequestId === 'string' ? body.RequestId.slice(0, 128) : ''
+  if (biz === '1') return { matched: true, reference }
+  if (biz === '2') return { matched: false, reference }
+  if (biz === '3') fail('证件库中无此身份证记录，请核对后重试', 409)
+  fail('实名核验未通过，请稍后重试', 502)
+}
+
+async function verifyAliyun({ accessKeyId, accessKeySecret, realName, idNumber, timeout = 8000 }) {
+  return mapAliyunResult(await postAliyunJson({ accessKeyId, accessKeySecret, realName, idNumber, timeout }))
+}
+
 export function mapTencentResult(response) {
   if (!response || typeof response !== 'object') throw new Error('identity_response_invalid')
   if (response.Error) {
@@ -159,27 +223,40 @@ export class IdentityProviderSettings {
   settings() {
     const row=this.row()
     const fallbackConfigured=Boolean((this.fallback.url ?? '') && this.fallback.token)
-    const mode=row?.provider || (fallbackConfigured ? 'CUSTOM' : 'TENCENT_FACEID')
-    const url=mode === 'TENCENT_FACEID' ? TENCENT_HOST : (row?.endpoint ?? this.fallback.url ?? '')
+    const mode=row?.provider || (fallbackConfigured ? 'CUSTOM' : 'ALIYUN_CLOUD_AUTH')
+    const url=mode === 'TENCENT_FACEID' ? TENCENT_HOST : mode === 'ALIYUN_CLOUD_AUTH' ? ALIYUN_HOST : (row?.endpoint ?? this.fallback.url ?? '')
     const hasToken=Boolean(row ? row.token_cipher : this.fallback.token)
     const secretId=row?.secret_id || ''
     const hasSecretKey=Boolean(row?.secret_key_cipher)
     const region=row?.region || 'ap-guangzhou'
     const enabled=row ? row.enabled===1 : Boolean(url && hasToken)
-    const configured=enabled && (mode === 'TENCENT_FACEID' ? Boolean(secretId && hasSecretKey) : Boolean(url && hasToken))
-    return { mode, url, hasToken, secretId, hasSecretKey, region, endpoint: mode === 'TENCENT_FACEID' ? TENCENT_HOST : url, enabled, configured }
+    const configured=enabled && (mode === 'TENCENT_FACEID' ? Boolean(secretId && hasSecretKey) : mode === 'ALIYUN_CLOUD_AUTH' ? Boolean(secretId && hasSecretKey) : Boolean(url && hasToken))
+    return { mode, url, hasToken, secretId, hasSecretKey, region, endpoint: mode === 'TENCENT_FACEID' ? TENCENT_HOST : mode === 'ALIYUN_CLOUD_AUTH' ? ALIYUN_HOST : url, enabled, configured }
   }
   save(body,actor) {
     if(typeof body.enabled!=='boolean') fail('请选择核验服务状态')
     const row=this.row()
-    const mode=body.mode == null ? (row?.provider || 'CUSTOM') : String(body.mode).toUpperCase()
+    const mode=body.mode == null
+      ? ((body.url != null || body.token != null) ? 'CUSTOM' : (row?.provider || 'ALIYUN_CLOUD_AUTH'))
+      : String(body.mode).toUpperCase()
     if(!MODES.has(mode)) fail('实名服务商类型不正确')
     let endpoint=row?.endpoint ?? this.fallback.url ?? ''
     let tokenCipher=row?.token_cipher || ''
     let secretId=row?.secret_id || ''
     let secretKeyCipher=row?.secret_key_cipher || ''
     let region=row?.region || 'ap-guangzhou'
-    if(mode === 'TENCENT_FACEID') {
+    if(mode === 'ALIYUN_CLOUD_AUTH') {
+      secretId=optionalText(body.secretId ?? secretId, '阿里云 AccessKey ID', 128)
+      const input=body.secretKey ?? ''
+      if(typeof input!=='string'||input.length>512||/[\r\n]/.test(input)) fail('阿里云 AccessKey Secret 格式无效')
+      if(input.trim()) {
+        if(!this.key) fail('系统加密密钥未就绪',503)
+        secretKeyCipher=seal(input.trim(),this.key)
+      }
+      endpoint=ALIYUN_HOST
+      region=''
+      if(body.enabled && (!secretId || !secretKeyCipher)) fail('启用前请填写阿里云 AccessKey ID 和 AccessKey Secret')
+    } else if(mode === 'TENCENT_FACEID') {
       secretId=optionalText(body.secretId ?? secretId, '腾讯云 SecretId', 128)
       region=optionalText(body.region ?? region, '腾讯云地域', 40) || 'ap-guangzhou'
       if(!TENCENT_REGION.test(region)) fail('腾讯云地域格式不正确')
@@ -220,6 +297,12 @@ export class IdentityProviderSettings {
       try { secretKey=open(row.secret_key_cipher,this.key) }
       catch { fail('腾讯云 SecretKey 无法解密',503) }
       return verifyTencent({ secretId: row.secret_id, secretKey, region: row.region || 'ap-guangzhou', realName, idNumber })
+    }
+    if(row?.provider === 'ALIYUN_CLOUD_AUTH') {
+      let secretKey
+      try { secretKey=open(row.secret_key_cipher,this.key) }
+      catch { fail('阿里云 AccessKey Secret 无法解密',503) }
+      return verifyAliyun({ accessKeyId: row.secret_id, accessKeySecret: secretKey, realName, idNumber })
     }
     const result=await postIdentityJson(row?.endpoint ?? this.fallback.url,row ? open(row.token_cipher,this.key) : this.fallback.token,{name:realName,idNumber})
     if(typeof result?.matched!=='boolean') throw new Error('identity_response_invalid')
