@@ -80,9 +80,9 @@
               <svg class="trend-chart" viewBox="0 0 600 220" role="img" aria-label="授权签发趋势">
                 <defs><linearGradient id="trend-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#17191d" stop-opacity=".13"/><stop offset="1" stop-color="#17191d" stop-opacity="0"/></linearGradient></defs>
                 <line v-for="grid in trendGrid" :key="grid.y" x1="38" :y1="grid.y" x2="586" :y2="grid.y" class="trend-grid-line"/>
-                <path :d="trendAreaPath" fill="url(#trend-fill)"/>
-                <path :d="trendLinePath" fill="none" class="trend-line"/>
-                <circle v-for="(point,index) in trendPoints" :key="index" :cx="point.x" :cy="point.y" r="3.2" class="trend-dot"/>
+                <path :key="'area-'+trendRange" :d="trendAreaPath" fill="url(#trend-fill)" class="trend-area"/>
+                <path :key="'line-'+trendRange" :d="trendLinePath" fill="none" pathLength="1" class="trend-line"/>
+                <g :key="'points-'+trendRange"><circle v-for="(point,index) in trendPoints" :key="index" :cx="point.x" :cy="point.y" r="3.2" class="trend-dot"/></g>
                 <text v-for="grid in trendGrid" :key="'label-'+grid.y" x="28" :y="grid.y+4" text-anchor="end" class="trend-axis">{{ grid.value }}</text>
                 <text v-for="(point,index) in trendPoints" :key="'x-'+index" :x="point.x" y="210" text-anchor="middle" class="trend-axis">{{ point.label }}</text>
               </svg>

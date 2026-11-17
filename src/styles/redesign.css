@@ -198,6 +198,22 @@ a { color: var(--sx-primary); }
 .overview-content { position: relative; isolation: isolate; overflow-x: clip; }
 .overview-content::before { position: absolute; z-index: -1; top: -74px; right: -64px; width: min(72vw, 960px); height: 410px; border-radius: 50% 0 0 50%; background: linear-gradient(132deg, rgba(255,255,255,.95) 0%, rgba(226,230,235,.9) 44%, rgba(191,198,208,.42) 62%, rgba(255,255,255,0) 74%); transform: rotate(-7deg); content: ""; pointer-events: none; }
 .overview-content::after { position: absolute; z-index: -1; top: 24px; right: 32px; width: min(52vw, 700px); height: 270px; border: 44px solid rgba(255,255,255,.46); border-radius: 50% 0 0 50%; transform: rotate(-9deg); content: ""; pointer-events: none; }
+@keyframes sx-overview-in { from { opacity: 0; transform: translate3d(0, 8px, 0); } to { opacity: 1; transform: translate3d(0, 0, 0); } }
+@keyframes sx-line-draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+@keyframes sx-dot-in { from { opacity: 0; transform: scale(.6); transform-origin: center; } to { opacity: 1; transform: scale(1); transform-origin: center; } }
+@keyframes sx-area-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes sx-donut-in { from { opacity: 0; transform: scale(.94); } to { opacity: 1; transform: scale(1); } }
+.overview-content .page-heading { animation: sx-overview-in .32s cubic-bezier(.2,.8,.2,1) both; }
+.overview-content .stats article { animation: sx-overview-in .34s cubic-bezier(.2,.8,.2,1) both; }
+.overview-content .stats article:nth-child(1) { animation-delay: 40ms; }
+.overview-content .stats article:nth-child(2) { animation-delay: 80ms; }
+.overview-content .stats article:nth-child(3) { animation-delay: 120ms; }
+.overview-content .stats article:nth-child(4) { animation-delay: 160ms; }
+.overview-content .process-card { animation: sx-overview-in .36s cubic-bezier(.2,.8,.2,1) .14s both; }
+.overview-content .analysis-card { animation: sx-overview-in .36s cubic-bezier(.2,.8,.2,1) both; }
+.overview-content .trend-card { animation-delay: 20ms; }
+.overview-content .status-card { animation-delay: 60ms; }
+.overview-content .recent-card { animation-delay: 100ms; }
 .overview-hero { position: relative; display: flex; align-items: center; min-height: 190px; margin-bottom: 18px; overflow: hidden; padding: 30px 34px; border: 1px solid #edf0f5; border-radius: 16px; background: linear-gradient(110deg, #f8fafc 0%, #f2f5f9 58%, #edf1f6 100%); }
 .hero-copy { position: relative; z-index: 2; max-width: 560px; }
 .hero-line { display: block; width: 28px; height: 3px; margin-bottom: 17px; border-radius: 99px; background: var(--sx-primary); }
@@ -251,10 +267,12 @@ a { color: var(--sx-primary); }
 .trend-chart { display: block; width: 100%; height: 220px; overflow: visible; }
 .trend-grid-line { stroke: #f0f2f5; stroke-width: 1; }
 .trend-line { stroke: #17191d; stroke-width: 2.1; stroke-linecap: round; stroke-linejoin: round; }
-.trend-dot { fill: #17191d; stroke: #fff; stroke-width: 1.5; }
+.trend-line { stroke-dasharray: 1; stroke-dashoffset: 1; animation: sx-line-draw .72s cubic-bezier(.2,.8,.2,1) .18s forwards; }
+.trend-area { animation: sx-area-in .45s ease .24s both; }
+.trend-dot { fill: #17191d; stroke: #fff; stroke-width: 1.5; opacity: 0; transform-box: fill-box; transform-origin: center; animation: sx-dot-in .22s ease .52s forwards; }
 .trend-axis { fill: #98a2b3; font-size: 9px; font-family: inherit; }
 .status-layout { display: flex; align-items: center; justify-content: center; gap: 24px; min-height: 200px; }
-.donut-chart { position: relative; display: grid; place-items: center; width: 142px; height: 142px; flex: 0 0 142px; border-radius: 50%; }
+.donut-chart { position: relative; display: grid; place-items: center; width: 142px; height: 142px; flex: 0 0 142px; border-radius: 50%; animation: sx-donut-in .36s cubic-bezier(.2,.8,.2,1) .16s both; }
 .donut-center { display: grid; place-items: center; width: 88px; height: 88px; border-radius: 50%; background: #fff; text-align: center; box-shadow: inset 0 0 0 1px #f0f2f5; }
 .donut-center strong { display: block; color: #17191d; font-size: 24px; font-weight: 740; line-height: 1.05; }
 .donut-center span { display: block; margin-top: 4px; color: #98a2b3; font-size: 9px; }
@@ -474,7 +492,9 @@ a { color: var(--sx-primary); }
   .content { padding-left: 12px; padding-right: 12px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
+  *, *::before, *::after { animation-duration: .001ms !important; animation-delay: 0ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; transition-delay: 0ms !important; }
+  .trend-line { stroke-dasharray: none; stroke-dashoffset: 0; }
+  .trend-dot { opacity: 1; }
 }
 
 
