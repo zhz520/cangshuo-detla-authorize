@@ -5,10 +5,13 @@
         <div class="workspace-panel-title"><h2>实名供应商</h2><p>姓名与身份证号二要素核验</p></div>
         <el-tag :type="provider.configured ? 'success' : 'info'">{{ provider.configured ? '已配置' : '未启用' }}</el-tag>
       </header>
+      <el-alert class="provider-guide" type="info" :closable="false" show-icon
+        title="填写服务商提供的 HTTPS 核验接口"
+        description="接口需接受 POST JSON：{ name, idNumber }，并返回 { matched: true|false, requestId }；令牌通过 Authorization: Bearer 发送。没有现成接口时，可用服务商官方 SDK 自建一层转发。" />
       <el-form label-position="top" class="identity-provider-form" :disabled="loading || savingProvider">
         <el-row :gutter="16">
-          <el-col :xs="24" :md="12"><el-form-item label="供应商 HTTPS 核验地址"><el-input v-model="provider.url" placeholder="https://服务商域名/核验接口" /></el-form-item></el-col>
-          <el-col :xs="24" :md="12"><el-form-item label="供应商 Bearer 令牌"><el-input v-model="provider.token" type="password" show-password autocomplete="new-password" :placeholder="provider.hasToken ? '已保存，留空保留原值' : '填写接口访问令牌'" /></el-form-item></el-col>
+          <el-col :xs="24" :md="12"><el-form-item label="核验接口地址（HTTPS）"><el-input v-model="provider.url" placeholder="https://api.your-domain.com/verify" /></el-form-item></el-col>
+          <el-col :xs="24" :md="12"><el-form-item label="访问令牌（Bearer Token）"><el-input v-model="provider.token" type="password" show-password autocomplete="new-password" :placeholder="provider.hasToken ? '已保存，留空保留原值' : '填写服务商提供的接口令牌'" /></el-form-item></el-col>
         </el-row>
         <el-form-item label="启用实名供应商"><el-switch v-model="provider.enabled" /></el-form-item>
         <el-button type="primary" :loading="savingProvider" @click="saveProvider">保存供应商配置</el-button>
@@ -61,7 +64,7 @@
           <el-table-column prop="validity_days" label="有效天数" width="100" />
           <el-table-column label="范围" width="110"><template #default="{row}">{{ row.scope_type==='PROJECT' ? '指定项目' : '全局' }}</template></el-table-column>
           <el-table-column label="状态" width="100"><template #default="{row}"><el-tag :type="row.status==='ACTIVE'?'success':'info'">{{ row.status }}</el-tag></template></el-table-column>
-          <el-table-column label="操作" width="100" fixed="right"><template #default="{row}"><el-button link type="primary" @click="openPackage(row)">编辑</el-button></template></el-table-column>
+          <el-table-column label="操作" width="150" fixed="right"><template #default="{row}"><el-button link type="primary" @click="openPackage(row)">编辑</el-button><el-button link type="danger" @click="deletePackage(row)">删除</el-button></template></el-table-column>
         </el-table>
       </div>
     </section>
@@ -118,7 +121,7 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 const props = defineProps({ api: Function })
 const rows = ref([]), packages = ref([]), loading = ref(false), saving = ref(false)
 const provider = reactive({url:'',token:'',hasToken:false,enabled:false,configured:false})
@@ -202,6 +205,13 @@ async function savePackage() {
     packageVisible.value = false; await load(); ElMessage.success('套餐已保存')
   } catch (error) { ElMessage.error(error.message) } finally { saving.value = false }
 }
+async function deletePackage(row) {
+  try {
+    await ElMessageBox.confirm('删除套餐「' + row.name + '」？已有购买或发放记录的套餐不能删除。', '删除实名核验套餐', { type: 'warning' })
+    await props.api('/identity/packages/' + row.id, { method: 'DELETE' })
+    await load(); ElMessage.success('套餐已删除')
+  } catch (error) { if (error !== 'cancel' && error?.message && error.message !== 'cancel') ElMessage.error(error.message) }
+}
 async function showDetail(row) {
   current.value = row; detailTab.value = 'requests'; detailVisible.value = true
   try { ;[requests.value, ledger.value] = await Promise.all([props.api('/usage/requests?instanceId=' + encodeURIComponent(row.instance_id)), props.api('/usage/ledger?instanceId=' + encodeURIComponent(row.instance_id))]) }
@@ -212,6 +222,6 @@ onMounted(load)
 
 <style scoped>
 .package-panel{margin-top:22px}.muted{color:#78869a;font-size:13px}
-.identity-provider-form{padding:16px 20px 20px}
+.provider-guide{margin:0 20px 16px}.identity-provider-form{padding:0 20px 20px}
 @media(max-width:720px){.workspace-panel-head{align-items:flex-start;flex-direction:column}}
 </style>

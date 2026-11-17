@@ -161,3 +161,22 @@ test('client HMAC credentials reject replay and accept a valid request', async (
     assert.throws(() => fixture.service.verifyClient({ ...headers, 'x-sms-signature': '0'.repeat(64) }, 'POST', '/api/sms/v1/send', raw, body), /认证失败/)
   } finally { fixture.store.close() }
 })
+
+test('default verification templates copy the active Aliyun channel and are idempotent', () => {
+  const fixture = setup()
+  try {
+    const first = fixture.service.defaultVerificationTemplates('owner')
+    assert.equal(first.sourceTemplateKey, 'otp_login')
+    assert.deepEqual(first.created.sort(), ['otp_bind_new', 'otp_bind_old', 'otp_reset', 'otp_wechat_bind'])
+    const templates = fixture.service.templates().filter(item => item.template_key.startsWith('otp_'))
+    assert.equal(templates.length, 5)
+    for (const template of templates) {
+      assert.equal(template.provider_template_code, 'SMS_TEST')
+      assert.equal(template.status, 'ACTIVE')
+      assert.equal(template.billable, true)
+      assert.deepEqual(template.variables, [{ key: 'code', required: true, maxLength: 6 }])
+    }
+    const second = fixture.service.defaultVerificationTemplates('owner')
+    assert.deepEqual(second.created, [])
+  } finally { fixture.store.close() }
+})

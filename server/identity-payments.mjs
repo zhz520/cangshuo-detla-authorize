@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { fail } from './store.mjs'
-import { packageMethods, packageOfficialContext, prepayPackageOfficial, renderPackageCheckout, validatePackageNotification } from './package-checkout.mjs'
+import { packageMethods, packageOfficialContext, prepayPackageOfficial, renderPackageCheckout, switchPackagePayment, validatePackageNotification } from './package-checkout.mjs'
 
 const hash = value => createHash('sha256').update(value).digest('hex')
 
@@ -57,10 +57,12 @@ export class IdentityPackagePaymentService {
     if (context.summary.status === 'PAID') fail('套餐已收款，正在确认发放，请勿再次支付', 409)
     if (!context.summary.methods.includes('NATIVE')) fail('实名套餐扫码支付未启用', 503)
     const config = this.payments.wechatConfig(true)
-    let payment = context.payment
+    await switchPackagePayment(this, token, 'identity', 'NATIVE')
+    const switched = this.context(token)
+    let payment = switched.payment
     if (!payment) {
       const outTradeNo = 'IDPKG' + randomUUID().replaceAll('-', '').slice(0, 26)
-      payment = { id: randomUUID(), package_order_id: context.row.order_id, out_trade_no: outTradeNo, amount_cents: context.row.amount_cents, method: 'NATIVE', status: 'UNPAID', created_at: new Date().toISOString() }
+      payment = { id: randomUUID(), package_order_id: switched.row.order_id, out_trade_no: outTradeNo, amount_cents: switched.row.amount_cents, method: 'NATIVE', status: 'UNPAID', created_at: new Date().toISOString() }
       this.store.db.prepare('INSERT INTO identity_package_payments(id,package_order_id,out_trade_no,method,amount_cents,status,created_at) VALUES (?,?,?,?,?,?,?)')
         .run(payment.id, payment.package_order_id, payment.out_trade_no, 'NATIVE', payment.amount_cents, 'UNPAID', payment.created_at)
     }
@@ -69,7 +71,7 @@ export class IdentityPackagePaymentService {
     const data = await this.payments.wechatRequest('POST', '/v3/pay/transactions/native', {
       appid: config.appId || config.officialAppId,
       mchid: config.merchantId,
-      description: ('实名核验套餐 · ' + context.summary.packageName).slice(0, 120),
+      description: ('实名核验套餐 · ' + switched.summary.packageName).slice(0, 120),
       out_trade_no: payment.out_trade_no,
       notify_url: config.notifyUrl,
       amount: { total: payment.amount_cents, currency: 'CNY' }

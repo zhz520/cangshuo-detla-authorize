@@ -287,6 +287,23 @@ export class PaymentService {
     return result
   }
 
+  /**
+   * Close an unpaid WeChat order before changing payment channel.
+   * A missing or already-closed remote order is safe to replace; a paid order is not.
+   */
+  async closeWechatOrder(payment, config) {
+    if (!payment?.prepay_id) return { closed: false, reason: 'NO_PREPAY' }
+    const requestPath = `/v3/pay/transactions/out-trade-no/${encodeURIComponent(payment.out_trade_no)}/close`
+    const signed = await this.signedWechatFetch(config, 'POST', requestPath, { mchid: config.merchantId })
+    if (signed.response.ok) return { closed: true }
+    let result = {}
+    try { result = JSON.parse(signed.text || '{}') } catch {}
+    const code = String(result.code || '')
+    if (['ORDER_NOT_EXIST', 'ORDER_CLOSED'].includes(code)) return { closed: false, reason: code }
+    if (code === 'ORDERPAID' || code === 'ORDER_PAID') fail('原支付单已经付款，请返回后台核对到账状态', 409)
+    fail(`原支付通道关单失败：${result.message || code || signed.response.status}`, 502)
+  }
+
   async signedWechatFetch(config, method, requestPath, body) {
     const timestamp = Math.floor(Date.now()/1000).toString(), nonce = randomBytes(16).toString('hex'), bodyText = body == null ? '' : JSON.stringify(body)
     const message = `${method}\n${requestPath}\n${timestamp}\n${nonce}\n${bodyText}\n`

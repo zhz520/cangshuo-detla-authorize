@@ -171,6 +171,36 @@ export class SmsService {
     }))
   }
 
+  defaultVerificationTemplates(actor = 'owner') {
+    const defaults = [
+      ['otp_login', '登录验证码', 'LOGIN'],
+      ['otp_reset', '找回密码验证码', 'RESET'],
+      ['otp_bind_old', '修改手机号-原手机验证', 'BIND_OLD'],
+      ['otp_bind_new', '修改手机号-新手机验证', 'BIND_NEW'],
+      ['otp_wechat_bind', '微信绑定验证码', 'WECHAT_BIND']
+    ]
+    const created = []
+    const source = this.db.prepare(
+      "SELECT * FROM sms_templates WHERE provider_template_code<>'' ORDER BY CASE status WHEN 'ACTIVE' THEN 0 ELSE 1 END,updated_at DESC LIMIT 1"
+    ).get()
+    const status = source?.status === 'ACTIVE' ? 'ACTIVE' : 'DRAFT'
+    const variablesSchema = source?.variables_schema || JSON.stringify([{ key: 'code', required: true, maxLength: 40 }])
+    this.store.transaction(() => {
+      for (const [key, name, scene] of defaults) {
+        if (this.db.prepare('SELECT 1 FROM sms_templates WHERE template_key=?').get(key)) continue
+        this.db.prepare('INSERT INTO sms_templates(id,template_key,name,scene,sign_name,provider_template_code,variables_schema,billing_units,billable,status,min_client_version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
+          .run(randomUUID(), key, name, scene, source?.sign_name || '', source?.provider_template_code || '',
+            variablesSchema, source?.billing_units || 1, source?.billable == null ? 1 : source.billable,
+            source?.provider_template_code ? status : 'DRAFT', '1.16.5', this.now(), this.now())
+        created.push(key)
+      }
+      if (created.length) this.store.audit(actor, 'SEED_SMS_VERIFICATION_TEMPLATES', 'verification', {
+        created, sourceTemplateKey: source?.template_key || null
+      })
+    })
+    return { created, sourceTemplateKey: source?.template_key || null, templates: this.templates() }
+  }
+
   saveTemplate(body = {}, actor = 'owner') {
     const key = optionalText(body.templateKey || body.id, '模板键', 80).toLowerCase()
     if (!/^[a-z0-9][a-z0-9_.-]{1,79}$/.test(key)) fail('模板键只能使用小写字母、数字、点、下划线或短横线')
@@ -185,7 +215,7 @@ export class SmsService {
     const status = String(body.status || 'DRAFT').toUpperCase()
     if (!TEMPLATE_STATUS.has(status)) fail('模板状态不正确')
     if (status === 'ACTIVE' && !providerTemplateCode) fail('启用模板前请填写阿里云模板 Code')
-    const minVersion = optionalText(body.minClientVersion, '最低客户端版本', 40) || '1.17.0'
+    const minVersion = optionalText(body.minClientVersion, '最低客户端版本', 40) || '1.16.5'
     const existing = this.db.prepare('SELECT id FROM sms_templates WHERE template_key=?').get(key)
     const id = existing?.id || randomUUID()
     const time = this.now()
@@ -198,12 +228,26 @@ export class SmsService {
     return { templateKey: key, id }
   }
 
+  deleteTemplate(templateKey, actor = 'owner') {
+    const key = optionalText(templateKey, '模板键', 80).toLowerCase()
+    const existing = this.db.prepare('SELECT id FROM sms_templates WHERE template_key=?').get(key)
+    if (!existing) fail('模板不存在', 404)
+    const used = this.db.prepare('SELECT 1 FROM sms_requests WHERE template_id=? LIMIT 1').get(existing.id)
+    if (used) fail('模板已有发送记录，不能删除；请将状态改为停用', 409)
+    this.store.transaction(() => {
+      this.db.prepare('DELETE FROM sms_templates WHERE id=?').run(existing.id)
+      this.store.audit(actor, 'DELETE_SMS_TEMPLATE', key, {})
+    })
+    return { templateKey: key, deleted: true }
+  }
+
   packages() {
     return this.db.prepare('SELECT * FROM sms_package_products ORDER BY sort,created_at').all()
   }
 
   savePackage(body = {}, actor = 'owner') {
-    const id = body.id ? identifier(body.id, '套餐编号') : randomUUID()
+    const editing = Boolean(body.id)
+    const id = editing ? identifier(body.id, '套餐编号') : randomUUID()
     const code = optionalText(body.code, '套餐编码', 80)
     if (!/^[A-Za-z0-9_.-]{2,80}$/.test(code)) fail('套餐编码格式不正确')
     const name = optionalText(body.name, '套餐名称', 120)
@@ -214,16 +258,36 @@ export class SmsService {
     const scopeType = String(body.scopeType || 'GLOBAL').toUpperCase()
     if (!['GLOBAL', 'PROJECT'].includes(scopeType)) fail('套餐适用范围不正确')
     const scopeId = scopeType === 'PROJECT' ? identifier(body.scopeId, '套餐项目') : null
+    if (scopeType === 'PROJECT' && !this.db.prepare('SELECT id FROM projects WHERE id=?').get(scopeId)) fail('套餐项目不存在', 404)
     const status = String(body.status || 'DRAFT').toUpperCase()
     if (!PACKAGE_STATUS.has(status)) fail('套餐状态不正确')
     const time = this.now()
     this.store.transaction(() => {
-      this.db.prepare('INSERT INTO sms_package_products(id,code,name,message_count,price_cents,validity_days,scope_type,scope_id,status,sort,description,created_at,updated_at) ' +
-        'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(code) DO UPDATE SET name=excluded.name,message_count=excluded.message_count,price_cents=excluded.price_cents,validity_days=excluded.validity_days,scope_type=excluded.scope_type,scope_id=excluded.scope_id,status=excluded.status,sort=excluded.sort,description=excluded.description,updated_at=excluded.updated_at')
-        .run(id, code, name, messageCount, priceCents, validityDays, scopeType, scopeId, status, number(body.sort, 0), optionalText(body.description, '套餐说明', 500), time, time)
-      this.store.audit(actor, 'SAVE_SMS_PACKAGE', code, { status, messageCount, priceCents, scopeType })
+      const duplicate = this.db.prepare('SELECT id FROM sms_package_products WHERE code=?').get(code)
+      if (duplicate && (!editing || duplicate.id !== id)) fail('套餐编码已存在，请换一个编码', 409)
+      if (editing) {
+        if (!this.db.prepare('SELECT 1 FROM sms_package_products WHERE id=?').get(id)) fail('套餐不存在', 404)
+        this.db.prepare('UPDATE sms_package_products SET code=?,name=?,message_count=?,price_cents=?,validity_days=?,scope_type=?,scope_id=?,status=?,sort=?,description=?,updated_at=? WHERE id=?')
+          .run(code, name, messageCount, priceCents, validityDays, scopeType, scopeId, status, number(body.sort, 0), optionalText(body.description, '套餐说明', 500), time, id)
+      } else {
+        this.db.prepare('INSERT INTO sms_package_products(id,code,name,message_count,price_cents,validity_days,scope_type,scope_id,status,sort,description,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
+          .run(id, code, name, messageCount, priceCents, validityDays, scopeType, scopeId, status, number(body.sort, 0), optionalText(body.description, '套餐说明', 500), time, time)
+      }
+      this.store.audit(actor, editing ? 'UPDATE_SMS_PACKAGE' : 'CREATE_SMS_PACKAGE', code, { status, messageCount, priceCents, scopeType })
     })
     return { id, code }
+  }
+
+  deletePackage(packageId, actor = 'owner') {
+    const id = identifier(packageId, '套餐编号')
+    if (!this.db.prepare('SELECT 1 FROM sms_package_products WHERE id=?').get(id)) fail('套餐不存在', 404)
+    const used = this.db.prepare('SELECT 1 FROM sms_package_orders WHERE package_product_id=? UNION ALL SELECT 1 FROM sms_package_balances WHERE package_product_id=? LIMIT 1').get(id, id)
+    if (used) fail('套餐已有购买或发放记录，不能删除；请将状态改为停用', 409)
+    this.store.transaction(() => {
+      this.db.prepare('DELETE FROM sms_package_products WHERE id=?').run(id)
+      this.store.audit(actor, 'DELETE_SMS_PACKAGE', id, {})
+    })
+    return { id, deleted: true }
   }
 
   accountRows() {

@@ -13,7 +13,7 @@
           </div>
         </div>
       </template>
-      <el-alert title="阿里云 AccessKey 只保存在授权中心；客户系统不再保存公司短信密钥。" type="info" :closable="false" show-icon />
+      <el-alert title="授权中心统一接入时，阿里云 AccessKey 只保存在这里；客户也可以在自己的后台选择阿里云直连并自行保存密钥。" type="info" :closable="false" show-icon />
       <el-tabs v-model="tab" class="sms-tabs">
         <el-tab-pane label="接入配置" name="settings">
           <el-form label-position="top" class="sms-form" :disabled="saving">
@@ -27,7 +27,8 @@
               </el-form-item>
               <el-form-item label="默认短信签名"><el-input v-model="settings.defaultSignName" placeholder="例如：KK云电竞" /></el-form-item>
               <el-form-item label="请求超时（毫秒）"><el-input-number v-model="settings.timeoutMs" :min="1000" :max="30000" :step="1000" /></el-form-item>
-              <el-form-item label="回执签名密钥">
+              <el-form-item>
+                <template #label><span class="label-with-help">回执签名密钥<el-tooltip content="与阿里云短信回执转发端共享的 32 字节密钥，用于验证回执确实来自你的转发服务。"><span class="help-dot">?</span></el-tooltip></span></template>
                 <el-input v-model="settings.receiptKey" type="password" show-password autocomplete="new-password"
                   :placeholder="settings.receiptConfigured ? '已配置，留空保留原值' : '32 字节 Base64 或 64 位十六进制'" />
               </el-form-item>
@@ -39,7 +40,10 @@
         </el-tab-pane>
 
         <el-tab-pane label="模板管理" name="templates">
-          <div class="table-toolbar"><span class="muted">客户只提交 templateKey 和变量，正文、签名和模板 Code 由这里统一配置。</span><el-button type="primary" @click="openTemplate()">新增模板</el-button></div>
+          <el-alert class="template-alert" type="info" :closable="false" show-icon
+            title="登录、找回密码、改绑手机和微信绑定共需 5 个验证码模板。"
+            description="点击「初始化验证码模板」会自动创建 otp_login、otp_reset、otp_bind_old、otp_bind_new、otp_wechat_bind；如已有启用的验证码模板，会复制其签名、阿里云模板 Code 和变量配置。" />
+          <div class="table-toolbar"><span class="muted">客户只提交 templateKey 和变量，正文、签名和模板 Code 由这里统一配置。</span><span class="toolbar-actions"><el-button @click="seedTemplates">初始化验证码模板</el-button><el-button type="primary" @click="openTemplate()">新增模板</el-button></span></div>
           <el-table :data="templates" stripe>
             <el-table-column prop="template_key" label="模板键" min-width="220" />
             <el-table-column prop="name" label="名称" min-width="150" />
@@ -48,7 +52,7 @@
             <el-table-column prop="sign_name" label="签名" min-width="120"><template #default="{row}">{{ row.sign_name || settings.defaultSignName || '默认' }}</template></el-table-column>
             <el-table-column label="计费" width="105"><template #default="{row}"><el-tag :type="row.billable ? 'success' : 'info'">{{ row.billable ? (row.billing_units || 1) + '条' : '免费' }}</el-tag></template></el-table-column>
             <el-table-column label="状态" width="100"><template #default="{row}"><el-tag :type="row.status==='ACTIVE'?'success':row.status==='RETIRED'?'info':'warning'">{{ row.status }}</el-tag></template></el-table-column>
-            <el-table-column label="操作" width="130" fixed="right"><template #default="{row}"><el-button link type="primary" @click="openTemplate(row)">编辑</el-button></template></el-table-column>
+            <el-table-column label="操作" width="150" fixed="right"><template #default="{row}"><el-button link type="primary" @click="openTemplate(row)">编辑</el-button><el-button link type="danger" @click="deleteTemplate(row)">删除</el-button></template></el-table-column>
           </el-table>
         </el-tab-pane>
 
@@ -76,7 +80,7 @@
             <el-table-column prop="validity_days" label="有效天数" width="100" />
             <el-table-column label="范围" width="110"><template #default="{row}">{{ row.scope_type === 'PROJECT' ? '指定项目' : '全局' }}</template></el-table-column>
             <el-table-column label="状态" width="100"><template #default="{row}"><el-tag :type="row.status==='ACTIVE'?'success':'info'">{{ row.status }}</el-tag></template></el-table-column>
-            <el-table-column label="操作" width="100" fixed="right"><template #default="{row}"><el-button link type="primary" @click="openPackage(row)">编辑</el-button></template></el-table-column>
+            <el-table-column label="操作" width="150" fixed="right"><template #default="{row}"><el-button link type="primary" @click="openPackage(row)">编辑</el-button><el-button link type="danger" @click="deletePackage(row)">删除</el-button></template></el-table-column>
           </el-table>
         </el-tab-pane>
 
@@ -265,9 +269,34 @@ async function saveSettings() {
   } catch (error) { ElMessage.error(error.message) }
   finally { saving.value = false }
 }
+async function seedTemplates() {
+  saving.value = true
+  try {
+    const result = await props.api('/sms/templates/defaults', { method: 'POST' })
+    await load()
+    ElMessage.success(result.created?.length
+      ? '已创建 ' + result.created.length + ' 个验证码模板；已复制现有模板的通道配置，请核对阿里云模板 Code 和状态'
+      : '验证码模板已存在，无需重复创建')
+  } catch (error) { ElMessage.error(error.message) }
+  finally { saving.value = false }
+}
 function openTemplate(row) {
   templateEditing.value = !!row
-  Object.assign(templateForm, row || { templateKey: '', name: '', scene: '', signName: '', providerTemplateCode: '', billingUnits: 1, billable: true, status: 'DRAFT' })
+  for (const key of Object.keys(templateForm)) delete templateForm[key]
+  Object.assign(templateForm, row ? {
+    templateKey: row.template_key,
+    name: row.name,
+    scene: row.scene,
+    signName: row.sign_name || '',
+    providerTemplateCode: row.provider_template_code || '',
+    billingUnits: row.billing_units || 1,
+    billable: row.billable !== false,
+    status: row.status || 'DRAFT',
+    minClientVersion: row.min_client_version || '1.16.5'
+  } : {
+    templateKey: '', name: '', scene: '', signName: '', providerTemplateCode: '',
+    billingUnits: 1, billable: true, status: 'DRAFT', minClientVersion: '1.16.5'
+  })
   templateVariables.value = (row?.variables || []).map(item => ({ key: item.key, maxLength: item.maxLength || 40, required: item.required !== false }))
   if (!templateVariables.value.length) templateVariables.value.push({ key: 'code', maxLength: 40, required: true })
   templateVisible.value = true
@@ -283,22 +312,61 @@ async function saveTemplate() {
   } catch (error) { ElMessage.error(error.message) }
   finally { saving.value = false }
 }
+async function deleteTemplate(row) {
+  try {
+    await ElMessageBox.confirm('删除模板「' + (row.name || row.template_key) + '」？已有发送记录的模板不能删除。', '删除短信模板', { type: 'warning' })
+    await props.api('/sms/templates/' + encodeURIComponent(row.template_key), { method: 'DELETE' })
+    await load(); ElMessage.success('模板已删除')
+  } catch (error) { if (error !== 'cancel' && error?.message && error.message !== 'cancel') ElMessage.error(error.message) }
+}
 function openPackage(row) {
   packageEditing.value = !!row
-  Object.assign(packageForm, row ? { ...row, priceYuan: (Number(row.price_cents) / 100).toFixed(2) } : { code: '', name: '', messageCount: 100, priceYuan: '5.00', validityDays: 30, scopeType: 'GLOBAL', scopeId: '', status: 'DRAFT', description: '' })
+  for (const key of Object.keys(packageForm)) delete packageForm[key]
+  Object.assign(packageForm, row ? {
+    id: row.id,
+    code: row.code,
+    name: row.name,
+    messageCount: row.message_count,
+    priceYuan: (Number(row.price_cents) / 100).toFixed(2),
+    validityDays: row.validity_days,
+    scopeType: row.scope_type,
+    scopeId: row.scope_id || '',
+    status: row.status,
+    description: row.description || ''
+  } : {
+    id: '', code: '', name: '', messageCount: 100, priceYuan: '5.00', validityDays: 30,
+    scopeType: 'GLOBAL', scopeId: '', status: 'DRAFT', description: ''
+  })
   packageVisible.value = true
 }
 async function savePackage() {
   if (!packageForm.code || !packageForm.name) return ElMessage.warning('请填写套餐编码和名称')
+  if (!/^(?:0|[1-9]\d{0,8})(?:\.\d{1,2})?$/.test(String(packageForm.priceYuan))) return ElMessage.warning('请输入有效套餐价格')
   saving.value = true
   try {
-    const body = { ...packageForm, priceCents: cents(packageForm.priceYuan) }
-    delete body.priceYuan
+    const body = {
+      code: packageForm.code.trim(),
+      name: packageForm.name.trim(),
+      messageCount: packageForm.messageCount,
+      priceCents: cents(packageForm.priceYuan),
+      validityDays: packageForm.validityDays,
+      scopeType: packageForm.scopeType,
+      scopeId: packageForm.scopeType === 'PROJECT' ? packageForm.scopeId : null,
+      status: packageForm.status,
+      description: packageForm.description || ''
+    }
     if (packageEditing.value) await props.api('/sms/packages/' + packageForm.id, { method: 'PUT', body })
     else await props.api('/sms/packages', { method: 'POST', body })
     packageVisible.value = false; await load(); ElMessage.success('套餐已保存')
   } catch (error) { ElMessage.error(error.message) }
   finally { saving.value = false }
+}
+async function deletePackage(row) {
+  try {
+    await ElMessageBox.confirm('删除套餐「' + row.name + '」？已有购买或发放记录的套餐不能删除。', '删除短信套餐', { type: 'warning' })
+    await props.api('/sms/packages/' + row.id, { method: 'DELETE' })
+    await load(); ElMessage.success('套餐已删除')
+  } catch (error) { if (error !== 'cancel' && error?.message && error.message !== 'cancel') ElMessage.error(error.message) }
 }
 function editAccount(row) {
   accountCurrent.value = row
@@ -355,9 +423,13 @@ onMounted(load)
 .sms-head-actions { display:flex; align-items:center; gap:10px; }
 .sms-tabs { margin-top:18px; }
 .sms-form { max-width:900px; }
+.template-alert { margin:4px 0 16px; }
+.label-with-help { display:inline-flex; align-items:center; gap:6px; }
+.help-dot { display:inline-flex; align-items:center; justify-content:center; width:16px; height:16px; border-radius:50%; background:#eef1f5; color:#667085; font-size:11px; cursor:help; }
 .form-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:0 22px; }
 .form-actions { display:flex; justify-content:flex-end; margin-top:6px; }
 .table-toolbar { display:flex; align-items:center; justify-content:space-between; gap:14px; margin:8px 0 16px; }
+.toolbar-actions { display:flex; align-items:center; gap:8px; flex-shrink:0; }
 .usage-summary { display:flex;flex-wrap:wrap;gap:8px 20px;margin-bottom:14px;color:#667085;font-size:13px; }
 .variable-list { width:100%; display:grid; gap:9px; }
 .variable-row { display:grid; grid-template-columns:minmax(0,1fr) 120px 70px auto; align-items:center; gap:10px; }

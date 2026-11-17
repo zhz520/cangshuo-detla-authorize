@@ -27,7 +27,8 @@ export class IdentityPackageService {
   }
 
   savePackage(body = {}, actor = 'owner') {
-    const id = body.id ? identifier(body.id, '套餐编号') : randomUUID()
+    const editing = Boolean(body.id)
+    const id = editing ? identifier(body.id, '套餐编号') : randomUUID()
     const code = optionalText(body.code, '套餐编码', 80)
     if (!/^[A-Za-z0-9_.-]{2,80}$/.test(code)) fail('套餐编码格式不正确')
     const name = optionalText(body.name, '套餐名称', 120)
@@ -42,13 +43,32 @@ export class IdentityPackageService {
     const status = String(body.status || 'DRAFT').toUpperCase()
     if (!STATUS.has(status)) fail('套餐状态不正确')
     const time = now()
+    const duplicate = this.db.prepare('SELECT id FROM identity_package_products WHERE code=?').get(code)
+    if (duplicate && (!editing || duplicate.id !== id)) fail('套餐编码已存在，请换一个编码', 409)
+    if (editing && !this.db.prepare('SELECT 1 FROM identity_package_products WHERE id=?').get(id)) fail('套餐不存在', 404)
     this.store.transaction(() => {
-      this.db.prepare('INSERT INTO identity_package_products(id,code,name,verification_count,price_cents,validity_days,scope_type,scope_id,status,sort,description,created_at,updated_at) ' +
-        'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(code) DO UPDATE SET name=excluded.name,verification_count=excluded.verification_count,price_cents=excluded.price_cents,validity_days=excluded.validity_days,scope_type=excluded.scope_type,scope_id=excluded.scope_id,status=excluded.status,sort=excluded.sort,description=excluded.description,updated_at=excluded.updated_at')
-        .run(id, code, name, verificationCount, priceCents, validityDays, scopeType, scopeId, status, Number(body.sort) || 0, optionalText(body.description, '套餐说明'), time, time)
-      this.store.audit(actor, 'SAVE_IDENTITY_PACKAGE', code, { status, verificationCount, priceCents, scopeType })
+      if (editing) {
+        this.db.prepare('UPDATE identity_package_products SET code=?,name=?,verification_count=?,price_cents=?,validity_days=?,scope_type=?,scope_id=?,status=?,sort=?,description=?,updated_at=? WHERE id=?')
+          .run(code, name, verificationCount, priceCents, validityDays, scopeType, scopeId, status, Number(body.sort) || 0, optionalText(body.description, '套餐说明'), time, id)
+      } else {
+        this.db.prepare('INSERT INTO identity_package_products(id,code,name,verification_count,price_cents,validity_days,scope_type,scope_id,status,sort,description,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
+          .run(id, code, name, verificationCount, priceCents, validityDays, scopeType, scopeId, status, Number(body.sort) || 0, optionalText(body.description, '套餐说明'), time, time)
+      }
+      this.store.audit(actor, editing ? 'UPDATE_IDENTITY_PACKAGE' : 'CREATE_IDENTITY_PACKAGE', code, { status, verificationCount, priceCents, scopeType })
     })
     return this.db.prepare('SELECT * FROM identity_package_products WHERE code=?').get(code)
+  }
+
+  deletePackage(packageId, actor = 'owner') {
+    const id = identifier(packageId, '套餐编号')
+    if (!this.db.prepare('SELECT 1 FROM identity_package_products WHERE id=?').get(id)) fail('套餐不存在', 404)
+    const used = this.db.prepare('SELECT 1 FROM identity_package_orders WHERE package_product_id=? UNION ALL SELECT 1 FROM identity_package_balances WHERE package_product_id=? LIMIT 1').get(id, id)
+    if (used) fail('套餐已有购买或发放记录，不能删除；请将状态改为停用', 409)
+    this.store.transaction(() => {
+      this.db.prepare('DELETE FROM identity_package_products WHERE id=?').run(id)
+      this.store.audit(actor, 'DELETE_IDENTITY_PACKAGE', id, {})
+    })
+    return { id, deleted: true }
   }
 
   availablePackages(instanceId) {

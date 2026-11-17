@@ -57,7 +57,7 @@ test('package payment notification grants exactly one package balance', async ()
   } finally { store.close() }
 })
 
-test('SMS and identity checkout reuse Native QR, validate project gate, and snapshot amount', async () => {
+test('SMS and identity checkout prefer official QR/JSAPI, validate project gate, and snapshot amount', async () => {
   const { store, project, instance, sms, service, payments } = setup()
   try {
     // Fixture only: production settings validate real credentials before enabling Native.
@@ -83,9 +83,11 @@ test('SMS and identity checkout reuse Native QR, validate project gate, and snap
       assert.equal(calls.at(-1).amount.total, amount)
       store.db.prepare("UPDATE payment_providers SET methods=? WHERE id='wechat_pay'").run('["OFFICIAL","NATIVE"]')
       store.db.prepare('UPDATE projects SET payment_methods=? WHERE id=?').run('["OFFICIAL","NATIVE"]', project)
-      const page = await checkout.page(token, { headers: { 'user-agent': 'iPhone Mobile MicroMessenger/8.0' } }, 'https://authority.example.invalid')
-      assert.match(page, /<svg/)
-      assert.doesNotMatch(page, /id="official-pay"/)
+      const desktopPage = await checkout.page(token, { headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0) Chrome/130' } }, 'https://authority.example.invalid')
+      assert.match(desktopPage, /<svg/)
+      const mobilePage = await checkout.page(token, { headers: { 'user-agent': 'iPhone Mobile MicroMessenger/8.0' } }, 'https://authority.example.invalid')
+      assert.match(mobilePage, /id="official-pay"/)
+      assert.doesNotMatch(mobilePage, /<svg/)
       store.db.prepare("UPDATE projects SET payment_methods='[]' WHERE id=?").run(project)
       assert.equal(checkout.summary(token).paymentReady, false)
       await assert.rejects(() => checkout.prepay(token), /扫码支付未启用/)

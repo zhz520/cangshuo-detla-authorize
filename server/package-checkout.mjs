@@ -35,6 +35,42 @@ export function validatePackageNotification(transaction, payment, config) {
       (transaction.amount?.currency && transaction.amount.currency !== 'CNY')) fail('微信支付通知金额不匹配', 409)
 }
 
+const packageOutTradeNo = kind =>
+  (kind === 'sms' ? 'SMSPKG' : 'IDPKG') + randomUUID().replaceAll('-', '').slice(0, 26)
+
+/**
+ * Switch an unpaid package payment from a disabled channel to the selected
+ * enabled channel. The old WeChat order is closed first, then a new merchant
+ * order number is used; a closed out_trade_no is never reused.
+ */
+export async function switchPackagePayment(service, token, kind, method, openid = null) {
+  const context = service.context(token)
+  if (context.summary.status !== 'UNPAID') fail('套餐已付款或正在确认，请返回收款页查单', 409)
+  if (!context.summary.methods.includes(method)) fail('当前套餐未启用该支付方式', 503)
+  const { payments, store } = service
+  const table = kind === 'sms' ? 'sms_package_payments' : 'identity_package_payments'
+  const select = store.db.prepare(`SELECT * FROM ${table} WHERE package_order_id=?`)
+  if (!context.payment || context.payment.method === method) return context.payment
+  if (context.payment.status === 'PAID') fail('套餐已付款，请返回收款页查单', 409)
+  return payments.oncePerPrepay('switch:' + context.row.order_id, async () => {
+    let current = select.get(context.row.order_id)
+    if (!current || current.method === method) return current
+    const config = payments.wechatConfig(true)
+    await payments.closeWechatOrder(current, config)
+    const nextNo = packageOutTradeNo(kind)
+    const updated = store.db.prepare(
+      `UPDATE ${table} SET out_trade_no=?,method=?,openid=?,prepay_id=NULL,status='UNPAID',created_at=? WHERE id=? AND status IN ('UNPAID','PREPAY')`
+    ).run(nextNo, method, openid, new Date().toISOString(), current.id)
+    if (!updated.changes) fail('套餐支付状态已变化，请返回收款页重新进入', 409)
+    store.audit('system', 'SWITCH_PACKAGE_PAYMENT', context.row.order_id, {
+      from: current.method, to: method, order: nextNo
+    })
+    current = select.get(context.row.order_id)
+    if (!current || current.method !== method) fail('套餐支付方式切换失败，请重试', 503)
+    return current
+  })
+}
+
 export async function prepayPackageOfficial(service, token, openid, kind, label) {
   const context = packageOfficialContext(service, token)
   const { payments, store } = service
@@ -42,12 +78,14 @@ export async function prepayPackageOfficial(service, token, openid, kind, label)
   // kind is internal only: sms and identity call this helper with constant values.
   const table = kind === 'sms' ? 'sms_package_payments' : 'identity_package_payments'
   const select = store.db.prepare(`SELECT * FROM ${table} WHERE package_order_id=?`)
+  await switchPackagePayment(service, token, kind, 'OFFICIAL', openid)
+  const switched = service.context(token)
   const payment = store.transaction(() => {
-    if (context.payment) return context.payment
-    const number = (kind === 'sms' ? 'SMSPKG' : 'IDPKG') + randomUUID().replaceAll('-', '').slice(0, 26)
+    if (switched.payment) return switched.payment
+    const number = packageOutTradeNo(kind)
     store.db.prepare(`INSERT INTO ${table}(id,package_order_id,out_trade_no,method,openid,amount_cents,status,created_at) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(package_order_id) DO NOTHING`)
       .run(randomUUID(), context.row.order_id, number, 'OFFICIAL', openid, context.row.amount_cents, 'UNPAID', new Date().toISOString())
-    return select.get(context.row.order_id)
+    return select.get(switched.row.order_id)
   })
   if (payment.method !== 'OFFICIAL') fail('该套餐已有其他支付单，请返回原支付页', 409)
   if (payment.openid !== openid) fail('请使用首次发起支付的微信账号完成支付', 409)
@@ -86,9 +124,11 @@ export async function renderPackageCheckout(service, token, request, baseUrl, ki
       paymentBox = '<p>正在确认支付结果，请勿重复付款。</p>'
     } else {
       if (!summary.paymentReady) return payments.renderMessage('授权中心尚未启用可用于套餐购买的微信支付方式')
-      if (payment && !summary.methods.includes(payment.method)) return payments.renderMessage('此套餐原支付通道已停用，请联系维护人员查单')
+      if (payment && !summary.methods.includes(payment.method) && !summary.methods.length) {
+        return payments.renderMessage('该套餐暂未启用可用的微信支付方式')
+      }
       try {
-        if (summary.methods.includes('OFFICIAL') && (!payment || payment.method === 'OFFICIAL')) {
+        if (summary.methods.includes('OFFICIAL')) {
           paymentBox = scene.mobileWechat ? scene.payMarkup : `<div class="scan">${await scanQr(new URL(checkoutPath(token, kind), payments.wechatConfig(true).origin || baseUrl).href)}${scene.payMarkup}</div>`
           autoPay = scene.autoPayScript
         } else {
