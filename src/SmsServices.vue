@@ -38,7 +38,7 @@
             <section class="receipt-guide">
               <strong>回执接入</strong>
               <ol>
-                <li>打开 <a href="https://dysms.console.aliyun.com/" target="_blank" rel="noopener noreferrer">阿里云短信控制台</a>，进入「国内消息 → 回执配置 → 状态报告接收」，选择「HTTP 批量推送」，关闭轻量消息队列，填写下方地址并点「测试」。</li>
+                <li>打开 <a href="https://dysms.console.aliyun.com/" target="_blank" rel="noopener noreferrer">阿里云短信控制台</a>，进入「国内消息（或通用设置）→ 回执配置 → 状态报告接收」，选择「HTTP 批量推送」，关闭轻量消息队列，填写下方地址并点「测试」。</li>
                 <li>授权中心收到推送后会调用 <code>QuerySendDetails</code> 复核；确认成功才扣费，失败释放预占，重复推送不会重复扣费。RAM 账号需具备 <code>dysms:QuerySendDetails</code> 权限。</li>
                 <li>已有 MNS 队列可以继续由队列消费者转发到 <code>/api/sms/receipts/aliyun</code>，但不要和 HTTP 推送同时开启，避免重复回执。历史缺回执可在「用量账单」点「查阿里云」补核。</li>
               </ol>
@@ -70,6 +70,10 @@
         </el-tab-pane>
 
         <el-tab-pane label="业务通知模板" name="notice">
+          <el-alert v-if="!templates.some(t=>t.template_key.startsWith('notice_'))"
+            title="业务通知模板尚未配置"
+            description="客户后台即使开启业务短信，也不会发送通知。请按场景和角色填写已审核的阿里云模板 Code、签名和变量后启用。"
+            type="warning" :closable="false" show-icon />
           <div class="table-toolbar"><span class="muted">选择场景和角色，填写已审核的阿里云通知模板 Code。实际接收人由客户后台决定。</span>
             <el-select v-model="noticeGroup" aria-label="通知场景" style="width:200px">
               <el-option v-for="[key,label] in noticeGroups" :key="key" :label="label" :value="key"/>
