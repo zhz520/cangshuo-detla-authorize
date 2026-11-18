@@ -640,6 +640,7 @@ export class SmsService {
   async processAliyunHttpReports(reports) {
     const list = Array.isArray(reports) ? reports : [reports]
     if (list.length > 300) fail('短信回执格式无效', 400)
+    const normalizeBiz = value => String(value || '').replace(/\^\d+$/, '')
     const provider = this.providerConfig()
     let checked = 0, applied = 0
     for (const item of list) {
@@ -648,7 +649,7 @@ export class SmsService {
       if (!/^[0-9a-f-]{36}$/.test(id) || !bizId || bizId.length > 120 || !PHONE.test(phone)) continue
       const row = this.db.prepare('SELECT * FROM sms_requests WHERE id=?').get(id)
       if (!row || row.billing_status !== 'RESERVED' || !['RESERVED','ACCEPTED','UNKNOWN'].includes(row.status)) continue
-      if (row.provider_message_id && row.provider_message_id !== bizId) continue
+      if (row.provider_message_id && normalizeBiz(row.provider_message_id) !== normalizeBiz(bizId)) continue
       if (this.phoneHashKey(phone) !== row.phone_hash) continue
       const sentAt = Number(item.send_time)
       const created = Number.isFinite(sentAt) && sentAt > 0 ? sentAt : Date.parse(row.created_at)
