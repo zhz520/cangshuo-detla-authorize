@@ -36,12 +36,17 @@
             <el-alert v-if="!settings.masterKeyConfigured" title="系统加密密钥未就绪，暂时无法保存密钥。" type="warning" :closable="false" show-icon />
             <el-alert v-else-if="!settings.receiptConfigured" title="填写与阿里云回执转发端一致的签名密钥。收到成功回执后才扣费。" type="info" :closable="false" show-icon />
             <section class="receipt-guide">
-              <strong>让送达结果和扣费回写</strong>
+              <strong>回执接入</strong>
               <ol>
-                <li>打开 <a href="https://dysms.console.aliyun.com/" target="_blank" rel="noopener noreferrer">阿里云短信控制台</a>，在「通用设置 → 回执配置 → 状态报告接收」开启国内短信 SmsReport 的轻量消息队列模式；把地域和队列名交给部署人员。</li>
-                <li>部署队列消费者，将消息签名转发到本授权中心的 <code>/api/sms/receipts/aliyun</code>。转发端使用与上方相同的签名密钥；不能把此验签路径直接填为阿里云 HTTP 推送地址。</li>
-                <li>核对「用量账单」是否出现回执终态。历史缺回执可用「查阿里云」，需要原手机号以及 RAM 权限 <code>dysms:QuerySendDetails</code>；查询不会重新发短信。</li>
+                <li>打开 <a href="https://dysms.console.aliyun.com/" target="_blank" rel="noopener noreferrer">阿里云短信控制台</a>，进入「国内消息 → 回执配置 → 状态报告接收」，选择「HTTP 批量推送」，关闭轻量消息队列，填写下方地址并点「测试」。</li>
+                <li>授权中心收到推送后会调用 <code>QuerySendDetails</code> 复核；确认成功才扣费，失败释放预占，重复推送不会重复扣费。RAM 账号需具备 <code>dysms:QuerySendDetails</code> 权限。</li>
+                <li>已有 MNS 队列可以继续由队列消费者转发到 <code>/api/sms/receipts/aliyun</code>，但不要和 HTTP 推送同时开启，避免重复回执。历史缺回执可在「用量账单」点「查阿里云」补核。</li>
               </ol>
+              <div v-if="settings.httpReceiptToken" class="receipt-url">
+                <el-input :model-value="httpReceiptUrl" readonly />
+                <el-button @click="copyReceiptUrl">复制地址</el-button>
+              </div>
+              <el-alert v-else title="先填写并保存回执签名密钥，系统会生成阿里云 HTTP 回执地址。" type="info" :closable="false" show-icon />
             </section>
             <div class="form-actions"><el-button type="primary" :loading="saving" @click="saveSettings">保存接入配置</el-button></div>
           </el-form>
@@ -247,7 +252,7 @@ import { noticeCatalog, noticeGroups, noticeVariables } from './sms-notice-catal
 
 const props = defineProps({ api: Function, refresh: Function })
 const loading = ref(false), saving = ref(false), tab = ref('settings')
-const settings = reactive({ enabled: false, endpoint: 'dysmsapi.aliyuncs.com', accessKeyId: '', accessKeySecret: '', receiptKey: '', defaultSignName: '', timeoutMs: 8000, hasSecret: false, masterKeyConfigured: false })
+const settings = reactive({ enabled: false, endpoint: 'dysmsapi.aliyuncs.com', accessKeyId: '', accessKeySecret: '', receiptKey: '', defaultSignName: '', timeoutMs: 8000, hasSecret: false, masterKeyConfigured: false, httpReceiptToken: '' })
 const templates = ref([]), packages = ref([]), accounts = ref([]), credentials = ref([]), usage = ref([])
 const usageProject = ref(''), loadingUsage = ref(false), usageSummary = ref(null)
 let usageSequence = 0
@@ -264,6 +269,9 @@ const creditVisible = ref(false), creditAmount = ref(''), creditReference = ref(
 const grantVisible = ref(false), grantPackageId = ref('')
 const credentialVisible = ref(false), credentialText = ref('')
 const availablePackages = computed(() => packages.value.filter(item => item.status === 'ACTIVE' && !(Number(item.credit_cents) > 0) && (item.scope_type === 'GLOBAL' || item.scope_id === accountCurrent.value?.project_id)))
+const httpReceiptUrl = computed(() => settings.httpReceiptToken
+  ? `${globalThis.location?.origin || 'https://auth.kk520yy.com'}/api/sms/receipts/aliyun/http?token=${encodeURIComponent(settings.httpReceiptToken)}`
+  : '')
 
 const money = cents => '¥' + (Number(cents || 0) / 100).toFixed(2)
 const time = value => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—'
@@ -314,6 +322,15 @@ async function saveSettings() {
     await props.refresh?.()
   } catch (error) { ElMessage.error(error.message) }
   finally { saving.value = false }
+}
+async function copyReceiptUrl() {
+  if (!httpReceiptUrl.value) return
+  try {
+    await navigator.clipboard.writeText(httpReceiptUrl.value)
+    ElMessage.success('回执地址已复制')
+  } catch {
+    ElMessage.error('复制失败，请手动选择地址复制')
+  }
 }
 async function seedTemplates() {
   saving.value = true
@@ -508,4 +525,6 @@ onMounted(load)
 .receipt-guide ol{padding-inline-start:22px;margin:8px 0}
 .receipt-guide a{color:var(--el-color-primary)}
 .receipt-guide code{overflow-wrap:anywhere}
+.receipt-url{display:flex;gap:10px;align-items:center;margin-top:12px}
+.receipt-url .el-input{flex:1}
 </style>

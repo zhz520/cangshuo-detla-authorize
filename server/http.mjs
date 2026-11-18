@@ -62,6 +62,7 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
         if((method!=='GET'||url.searchParams.get('prepare')==='1')&&['cross-site','same-site'].includes(fetchSite))fail('请求来源不匹配',403)
       }
       const supportFile = method === 'POST' && /^\/api\/support\/[a-z0-9-]+\/(?:agent\/conversations\/\d+\/)?attachment$/.test(route)
+      const receiptArray = route === '/api/sms/receipts/aliyun/http'
       let body = {}, rawBody = ''
       if (['POST', 'PUT', 'PATCH'].includes(method)) {
         if (request.headers.origin) {
@@ -83,7 +84,7 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
           for await (const chunk of request.iterator({ destroyOnReturn: false })) { size += chunk.length; if (size > 65536) fail('请求内容过大', 413); chunks.push(chunk) }
           rawBody = Buffer.concat(chunks).toString('utf8')
           try { body = JSON.parse(rawBody || '{}') } catch { fail('JSON 格式不正确') }
-          if (!body || typeof body !== 'object' || Array.isArray(body)) fail('请求内容须为对象')
+          if (!body || typeof body !== 'object' || (Array.isArray(body) && !receiptArray)) fail('请求内容须为对象')
         }
       }
       if (route.startsWith('/api/support/')) return await support.handle(request, response, url, body, json, secureCookie)
@@ -168,6 +169,14 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
       if (route === '/api/sms/receipts/aliyun' && method === 'POST') {
         sms.verifyReceipt(request.headers, rawBody)
         return json(sms.applyReceipts(body.reports))
+      }
+      if (route === '/api/sms/receipts/aliyun/http' && method === 'POST') {
+        sms.verifyHttpReceiptToken(url.searchParams.get('token') || '')
+        const reports = Array.isArray(body) ? body : Array.isArray(body.reports) ? body.reports : [body]
+        setImmediate(() => {
+          sms.processAliyunHttpReports(reports).catch(error => console.error('SMS_HTTP_RECEIPT_FAILED', error?.message || error))
+        })
+        return json({ code: 0, msg: '成功' })
       }
       if (route.startsWith('/api/sms/v1/')) {
         const instanceId = sms.verifyClient(request.headers, method, route, rawBody, body)

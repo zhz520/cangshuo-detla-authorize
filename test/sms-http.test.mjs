@@ -16,7 +16,11 @@ function setup() {
   const project = store.management.saveProject(null, { customerId: 'sms-http-customer', productId: 'detla', name: '短信接口项目', maintenanceUntil: '2028-12-01T00:00:00Z' }, 'owner').id
   const instance = randomUUID()
   store.createInstance({ id: instance, customerId: 'sms-http-customer', projectId: project, name: '短信接口实例', domains: ['sms-http.example.com'] }, 'owner')
-  const provider = { calls: 0, send: async () => { provider.calls++; return { accepted: true, bizId: 'biz-http', requestId: 'req-http' } } }
+  const provider = {
+    calls: 0,
+    send: async () => { provider.calls++; return { accepted: true, bizId: 'biz-http', requestId: 'req-http' } },
+    queryDelivery: async () => 'DELIVERED'
+  }
   const sms = new SmsService(store, { provider, masterKey, receiptKey: receiptKey.toString('base64'), phoneHashKey: 'sms-http-phone-key', defaultMode: 'METERED', defaultPriceCents: 5 })
   sms.saveSettings({ enabled: true, accessKeyId: 'test', accessKeySecret: 'test-secret', defaultSignName: '测试签名' }, 'owner')
   sms.saveTemplate({ templateKey: 'otp_login', name: '登录验证码', scene: 'LOGIN', providerTemplateCode: 'SMS_HTTP', variables: [{ key: 'code', required: true, maxLength: 6 }], status: 'ACTIVE' }, 'owner')
@@ -120,6 +124,42 @@ test('SMS reconciliation is operator-only, CSRF protected, and settles a verifie
     assert.equal(fixture.sms.accountDetail(fixture.project).balance_cents,100)
   } finally {
     await new Promise(resolve=>server.close(resolve))
+    fixture.store.close()
+  }
+})
+
+test('Aliyun HTTP receipt push is token protected, verified against QuerySendDetails, and idempotent', async () => {
+  const fixture = setup()
+  const server = createAuthorityServer(fixture.store, { sms: fixture.sms })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  const base = 'http://127.0.0.1:' + server.address().port
+  try {
+    const row = await fixture.sms.send(fixture.instance, { templateKey: 'otp_login', phone: '13800138000', variables: { code: '123456' } }, 'receipt-http-push')
+    const payload = JSON.stringify([{
+      phone_number: '13800138000', send_time: String(Date.now()), biz_id: 'biz-http',
+      out_id: row.requestId, success: true, err_code: 'DELIVERED'
+    }])
+    const url = base + '/api/sms/receipts/aliyun/http?token=' + encodeURIComponent(fixture.sms.httpReceiptToken())
+    const post = token => fetch(token ? url : base + '/api/sms/receipts/aliyun/http', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: payload
+    })
+    assert.equal((await post(false)).status, 401)
+    const accepted = await post(true)
+    assert.equal(accepted.status, 200)
+    assert.deepEqual(await accepted.json(), { code: 0, msg: '成功' })
+    for (let i = 0; i < 50; i++) {
+      const current = fixture.store.db.prepare('SELECT status FROM sms_requests WHERE id=?').get(row.requestId)
+      if (current.status === 'DELIVERED') break
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+    assert.equal(fixture.store.db.prepare('SELECT status,billing_status FROM sms_requests WHERE id=?').get(row.requestId).status, 'DELIVERED')
+    assert.equal(fixture.sms.accountDetail(fixture.project).balance_cents, 95)
+    assert.equal((await post(true)).status, 200)
+    await new Promise(resolve => setTimeout(resolve, 30))
+    assert.equal(fixture.sms.accountDetail(fixture.project).balance_cents, 95)
+    assert.equal(fixture.store.db.prepare("SELECT COUNT(*) AS count FROM sms_ledger WHERE type='CHARGE'").get().count, 1)
+  } finally {
+    await new Promise(resolve => server.close(resolve))
     fixture.store.close()
   }
 })

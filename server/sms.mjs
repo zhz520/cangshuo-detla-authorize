@@ -126,8 +126,22 @@ export class SmsService {
       enabled: row.enabled === 1, timeoutMs: row.timeout_ms, hasSecret: Boolean(row.access_key_secret_cipher),
       masterKeyConfigured: Boolean(this.masterKey),
       receiptConfigured: Boolean(this.receiptKey),
-      receiptSaved: Boolean(row.receipt_secret_cipher)
+      receiptSaved: Boolean(row.receipt_secret_cipher),
+      httpReceiptToken: this.httpReceiptToken()
     }
+  }
+
+  httpReceiptToken() {
+    const key = this.receiptKey
+    if (!key) return ''
+    return createHmac('sha256', key).update('aliyun-http-receipt-v1').digest('base64url')
+  }
+
+  verifyHttpReceiptToken(token) {
+    const expected = this.httpReceiptToken()
+    const value = String(token || '')
+    if (!expected || value.length !== expected.length || !timingSafeEqual(Buffer.from(expected), Buffer.from(value)))
+      fail('短信回执认证失败', 401)
   }
 
   get receiptKey() {
@@ -621,6 +635,41 @@ export class SmsService {
       else this.release(report.id, 'SMS_DELIVERY_FAILED')
     }
     return { processed: ready.size }
+  }
+
+  async processAliyunHttpReports(reports) {
+    const list = Array.isArray(reports) ? reports : [reports]
+    if (list.length > 300) fail('短信回执格式无效', 400)
+    const provider = this.providerConfig()
+    let checked = 0, applied = 0
+    for (const item of list) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+      const id = String(item.out_id || ''), bizId = String(item.biz_id || ''), phone = String(item.phone_number || '')
+      if (!/^[0-9a-f-]{36}$/.test(id) || !bizId || bizId.length > 120 || !PHONE.test(phone)) continue
+      const row = this.db.prepare('SELECT * FROM sms_requests WHERE id=?').get(id)
+      if (!row || row.billing_status !== 'RESERVED' || !['RESERVED','ACCEPTED','UNKNOWN'].includes(row.status)) continue
+      if (row.provider_message_id && row.provider_message_id !== bizId) continue
+      if (this.phoneHashKey(phone) !== row.phone_hash) continue
+      const sentAt = Number(item.send_time)
+      const created = Number.isFinite(sentAt) && sentAt > 0 ? sentAt : Date.parse(row.created_at)
+      if (!Number.isFinite(created)) continue
+      const sendDate = new Date(created + 8 * 3600000).toISOString().slice(0, 10).replaceAll('-', '')
+      let delivery
+      try {
+        delivery = await this.provider.queryDelivery({
+          accessKeyId: provider.access_key_id, accessKeySecret: provider.accessKeySecret,
+          phone, sendDate, bizId: row.provider_message_id || bizId, outId: row.id, timeoutMs: provider.timeout_ms
+        })
+      } catch (error) {
+        console.error('SMS_HTTP_RECEIPT_QUERY_FAILED', row.id, error?.message || 'unknown')
+        continue
+      }
+      checked++
+      if (delivery !== 'DELIVERED' && delivery !== 'FAILED') continue
+      const result = this.applyReceipts([{ out_id: row.id, biz_id: row.provider_message_id || bizId, success: delivery === 'DELIVERED' }])
+      applied += result.processed
+    }
+    return { received: list.length, checked, applied }
   }
 
   settleDelivered(requestId, bizId) {
