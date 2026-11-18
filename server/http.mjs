@@ -330,7 +330,7 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
       const content = await readFile(target); response.writeHead(200, { 'Content-Type': types[extension] }); response.end(content)
     } catch (error) {
       if (response.headersSent) return response.end()
-      if (error instanceof HttpError) return json({ message: error.message }, error.status)
+      if (error instanceof HttpError) return json({ message: error.message, ...(error.publicCode ? {errorCode: error.publicCode} : {}) }, error.status)
       if (/UNIQUE constraint failed: sms_templates\.template_key/.test(String(error.message))) return json({ message: '模板键已存在，请换一个模板键' }, 409)
       if (/UNIQUE constraint failed: sms_package_products\.code/.test(String(error.message))) return json({ message: '套餐编码已存在，请换一个编码' }, 409)
       if (/UNIQUE constraint failed: identity_package_products\.code/.test(String(error.message))) return json({ message: '套餐编码已存在，请换一个编码' }, 409)

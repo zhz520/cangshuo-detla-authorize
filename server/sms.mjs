@@ -453,7 +453,7 @@ export class SmsService {
   templateForSend(templateKey) {
     const key = optionalText(templateKey, '模板键', 80).toLowerCase()
     const row = this.db.prepare('SELECT * FROM sms_templates WHERE template_key=?').get(key)
-    if (!row || row.status !== 'ACTIVE') fail('短信模板未启用', 409)
+    if (!row || row.status !== 'ACTIVE') fail('短信模板未配置或未启用', 409, 'SMS_TEMPLATE_NOT_CONFIGURED')
     return { ...row, variables: parseVariables(row.variables_schema) }
   }
 
@@ -462,8 +462,8 @@ export class SmsService {
     const result = {}
     for (const rule of template.variables) {
       const value = source[rule.key]
-      if (rule.required && (value == null || String(value).trim() === '')) fail('短信模板缺少变量：' + rule.key)
-      if (value != null && String(value).length > rule.maxLength) fail('短信模板变量过长：' + rule.key)
+      if (rule.required && (value == null || String(value).trim() === '')) fail('短信模板缺少变量：' + rule.key, 400, 'SMS_TEMPLATE_INVALID')
+      if (value != null && String(value).length > rule.maxLength) fail('短信模板变量过长：' + rule.key, 400, 'SMS_TEMPLATE_INVALID')
       if (value != null) result[rule.key] = String(value)
     }
     return result

@@ -6,8 +6,8 @@ import { Management, DEFAULT_PRODUCT, publicReleaseText } from './management.mjs
 import { Releases } from './releases.mjs'
 import { ServiceGroups } from './service-groups.mjs'
 
-export class HttpError extends Error { constructor(status, message) { super(message); this.status = status } }
-export const fail = (message, status = 400) => { throw new HttpError(status, message) }
+export class HttpError extends Error { constructor(status, message, publicCode) { super(message); this.status = status; this.publicCode = publicCode } }
+export const fail = (message, status = 400, publicCode) => { throw new HttpError(status, message, publicCode) }
 export function text(value, label, maximum = 200) {
   if (typeof value !== 'string' || !value.trim() || value.trim().length > maximum) fail(`${label}不能为空，且最多 ${maximum} 字符`)
   return value.trim()

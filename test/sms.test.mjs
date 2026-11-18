@@ -180,3 +180,19 @@ test('default verification templates copy the active Aliyun channel and are idem
     assert.deepEqual(second.created, [])
   } finally { fixture.store.close() }
 })
+
+
+test('missing business templates and missing variables are rejected before send or reservation', async () => {
+  const f = setup()
+  try {
+    await assert.rejects(f.service.send(f.instance, {templateKey:'notice_player_new_order', phone:'13800138000'}, 'notice-no-template'), {
+      status:409, publicCode:'SMS_TEMPLATE_NOT_CONFIGURED'
+    })
+    await assert.rejects(f.service.send(f.instance, {templateKey:'otp_login', phone:'13800138000', variables:{}}, 'otp-no-variable'), {
+      status:400, publicCode:'SMS_TEMPLATE_INVALID'
+    })
+    assert.equal(f.calls, 0)
+    assert.equal(f.store.db.prepare('SELECT COUNT(*) n FROM sms_requests').get().n, 0)
+    assert.equal(f.service.accountDetail(f.project).reserved_cents, 0)
+  } finally { f.store.close() }
+})
