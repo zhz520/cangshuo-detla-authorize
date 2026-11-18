@@ -4,6 +4,7 @@ import {
 } from 'node:crypto'
 import { fail, identifier, integer, text } from './store.mjs'
 import { AliyunSmsProvider, SmsProviderUncertain } from './sms-provider.mjs'
+import { noticeCatalog, noticeVariables } from '../src/sms-notice-catalog.js'
 
 const MODES = new Set(['METERED', 'PACKAGE', 'HYBRID'])
 const TEMPLATE_STATUS = new Set(['DRAFT', 'ACTIVE', 'RETIRED'])
@@ -181,7 +182,7 @@ export class SmsService {
     ]
     const created = []
     const source = this.db.prepare(
-      "SELECT * FROM sms_templates WHERE provider_template_code<>'' ORDER BY CASE status WHEN 'ACTIVE' THEN 0 ELSE 1 END,updated_at DESC LIMIT 1"
+      "SELECT * FROM sms_templates WHERE provider_template_code<>'' AND scene IN ('LOGIN','RESET','BIND_OLD','BIND_NEW','WECHAT_BIND') ORDER BY CASE status WHEN 'ACTIVE' THEN 0 ELSE 1 END,updated_at DESC LIMIT 1"
     ).get()
     const status = source?.status === 'ACTIVE' ? 'ACTIVE' : 'DRAFT'
     const variablesSchema = source?.variables_schema || JSON.stringify([{ key: 'code', required: true, maxLength: 40 }])
@@ -206,10 +207,14 @@ export class SmsService {
     if (!/^[a-z0-9][a-z0-9_.-]{1,79}$/.test(key)) fail('模板键只能使用小写字母、数字、点、下划线或短横线')
     const name = optionalText(body.name, '模板名称', 120)
     if (!name) fail('模板名称不能为空')
-    const scene = optionalText(body.scene, '模板场景', 80) || 'GENERAL'
+    const notice = noticeCatalog.find(item => item.key === key)
+    if (key.startsWith('notice_') && !notice) fail('请选择支持的业务短信角色与场景')
+    const scene = notice ? notice.group.toUpperCase() : optionalText(body.scene, '模板场景', 80) || 'GENERAL'
     const signName = optionalText(body.signName, '模板签名', 120)
     const providerTemplateCode = optionalText(body.providerTemplateCode, '阿里云模板 Code', 120)
     const variables = normalizeVariables(body.variables || [])
+    if (notice && variables.some(item => !noticeVariables.includes(item.key))) fail('业务模板变量不在该系统可提供的字段中；请使用支持的阿里云变量名')
+    if (notice && providerTemplateCode && !/^SMS_[0-9]+$/.test(providerTemplateCode)) fail('请填写阿里云已审核的模板 Code（SMS_加数字）')
     const billingUnits = Math.max(1, Math.min(10, number(body.billingUnits, 1)))
     const billable = body.billable !== false
     const status = String(body.status || 'DRAFT').toUpperCase()
@@ -746,14 +751,44 @@ export class SmsService {
   }
 
   usageSummary(projectId) {
-    return this.db.prepare("SELECT COUNT(*) AS total_count,COUNT(CASE WHEN status='DELIVERED' THEN 1 END) AS delivered_count,COUNT(CASE WHEN status='FAILED' THEN 1 END) AS failed_count,COUNT(CASE WHEN billing_status='RESERVED' THEN 1 END) AS pending_count,COUNT(CASE WHEN status='ACCEPTED' AND billing_status<>'RESERVED' THEN 1 END) AS legacy_accepted_count,COALESCE(SUM(CASE WHEN billing_status='CHARGED' THEN charge_cents ELSE 0 END),0) AS charged_cents,COALESCE(SUM(CASE WHEN billing_status='CHARGED' AND package_balance_id IS NOT NULL THEN billing_units ELSE 0 END),0) AS package_units FROM sms_requests WHERE (? IS NULL OR project_id=?)").get(projectId || null, projectId || null)
+    return this.db.prepare("SELECT COUNT(*) AS total_count,COUNT(CASE WHEN COALESCE(provider_message_id,'')<>'' OR status='DELIVERED' THEN 1 END) AS provider_accepted_count,COUNT(CASE WHEN status='ACCEPTED' AND billing_status='RESERVED' THEN 1 END) AS waiting_receipt_count,MAX(CASE WHEN status='DELIVERED' OR error_code='SMS_DELIVERY_FAILED' THEN completed_at END) AS last_confirmed_at,COUNT(CASE WHEN status='DELIVERED' THEN 1 END) AS delivered_count,COUNT(CASE WHEN status='FAILED' THEN 1 END) AS failed_count,COUNT(CASE WHEN billing_status='RESERVED' THEN 1 END) AS pending_count,COUNT(CASE WHEN status='ACCEPTED' AND billing_status<>'RESERVED' THEN 1 END) AS legacy_accepted_count,COALESCE(SUM(CASE WHEN billing_status='CHARGED' THEN charge_cents ELSE 0 END),0) AS charged_cents,COALESCE(SUM(CASE WHEN billing_status='CHARGED' AND package_balance_id IS NOT NULL THEN billing_units ELSE 0 END),0) AS package_units FROM sms_requests WHERE (? IS NULL OR project_id=?)").get(projectId || null, projectId || null)
   }
 
   usage(projectId, limit = 200) {
     const size = Math.max(1, Math.min(number(limit, 200), 500))
-    const sql = 'SELECT r.id,r.project_id,r.instance_id,r.scene,r.phone_masked,r.status,r.billing_status,r.charge_cents,r.error_code,r.created_at,r.completed_at,i.name AS instance_name FROM sms_requests r JOIN instances i ON i.id=r.instance_id'
+    const sql = 'SELECT r.id,r.project_id,r.instance_id,r.scene,r.phone_masked,r.status,r.billing_status,r.charge_cents,r.error_code,r.provider_message_id,r.created_at,r.completed_at,i.name AS instance_name FROM sms_requests r JOIN instances i ON i.id=r.instance_id'
     if (projectId) return this.db.prepare(sql + ' WHERE r.project_id=? ORDER BY r.created_at DESC LIMIT ?').all(projectId, size)
     return this.db.prepare(sql + ' ORDER BY r.created_at DESC LIMIT ?').all(size)
+  }
+
+  async reconcileDelivery(requestId, body = {}, actor = 'owner') {
+    const row = this.db.prepare('SELECT * FROM sms_requests WHERE id=?').get(requestId)
+    if (!row) fail('短信请求不存在', 404)
+    if (row.billing_status !== 'RESERVED' || row.status !== 'ACCEPTED' || !row.provider_message_id)
+      fail('仅支持已受理、等待回执的短信对账', 409)
+    const phone = optionalText(body.phone, '原接收手机号', 20)
+    if (!PHONE.test(phone) || this.phoneHashKey(phone) !== row.phone_hash)
+      fail('原接收手机号与记录不匹配', 400)
+    const created = Date.parse(row.created_at)
+    if (!Number.isFinite(created) || Date.now() - created > 30 * 86400000)
+      fail('超出阿里云 30 天查询范围，不能自动补结算', 409)
+    const sendDate = new Date(created + 8 * 3600000).toISOString().slice(0,10).replaceAll('-','')
+    const provider = this.providerConfig()
+    let delivery
+    try {
+      delivery = await this.provider.queryDelivery({ accessKeyId:provider.access_key_id,
+        accessKeySecret:provider.accessKeySecret, phone, sendDate, bizId:row.provider_message_id,
+        outId:row.id, timeoutMs:provider.timeout_ms })
+    } catch (error) {
+      if (error.code === 'SMS_QUERY_PERMISSION_REQUIRED' || error.message === 'SMS_QUERY_PERMISSION_REQUIRED')
+        fail('请为授权中心 RAM 账号授予 dysms:QuerySendDetails 权限后重试', 503)
+      fail('阿里云查询失败；未改账，请核对查询权限或稍后重试', 503)
+    }
+    if (delivery !== 'DELIVERED' && delivery !== 'FAILED')
+      return { ...this.publicRequest(this.db.prepare('SELECT * FROM sms_requests WHERE id=?').get(row.id)), checked:false }
+    const result = this.applyReceipts([{out_id:row.id,biz_id:row.provider_message_id,success:delivery==='DELIVERED'}])
+    if (result.processed) this.store.audit(actor,'SMS_RECONCILE_DELIVERY',row.id,{status:delivery})
+    return { ...this.publicRequest(this.db.prepare('SELECT * FROM sms_requests WHERE id=?').get(row.id)), checked:true }
   }
 
   releaseUnknown(requestId, actor = 'owner') {

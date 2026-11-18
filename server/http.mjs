@@ -253,6 +253,7 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
         if ((smsMatch = route.match(/^\/api\/sms\/accounts\/([a-f\d-]{36})\/credit$/)) && method === 'POST') return json(sms.credit(smsMatch[1], body.amountCents, body.reference, session.username))
         if ((smsMatch = route.match(/^\/api\/sms\/accounts\/([a-f\d-]{36})\/packages$/)) && method === 'POST') return json(sms.grantPackage(smsMatch[1], body.packageId, session.username))
         if ((smsMatch = route.match(/^\/api\/sms\/credentials\/([a-f\d-]{36})\/rotate$/)) && method === 'POST') return json(sms.rotateCredential(smsMatch[1], session.username))
+        if ((smsMatch = route.match(/^\/api\/sms\/requests\/([a-f\d-]{36})\/reconcile$/)) && method === 'POST') return json(await sms.reconcileDelivery(smsMatch[1], body, session.username))
         if ((smsMatch = route.match(/^\/api\/sms\/requests\/([a-f\d-]{36})\/release$/)) && method === 'POST') return json(sms.releaseUnknown(smsMatch[1], session.username))
         if (route === '/api/runtime/tenants' && method === 'GET') return json(store.runtimeRegistry())
         if (route === '/api/service-groups' && method === 'GET') return json(store.serviceGroupService.list())

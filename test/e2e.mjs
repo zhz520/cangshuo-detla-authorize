@@ -49,6 +49,25 @@ try{
    async function navigate(name){if(item.options.viewport?.width<901||item.options.isMobile){const toggle=page.getByRole('button',{name:'打开菜单',exact:true});if(await toggle.isVisible())await toggle.click()}const target=page.getByRole('button',{name,exact:true});await target.click();await page.getByRole('heading',{name,exact:true,level:1}).waitFor();const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>window.innerWidth+2);assert.equal(overflow,false,item.name+' '+name+' horizontal overflow')}
    await navigate('客户管理');await dataRows().first().getByRole('button',{name:'编辑',exact:true}).click();await page.getByRole('dialog').waitFor();const dialog=await page.getByRole('dialog').boundingBox();assert(dialog.x>=0&&dialog.x+dialog.width<=(await page.evaluate(()=>innerWidth))+2,item.name+' dialog overflow');await page.screenshot({path:path.join(output,item.name+'-customer.png'),fullPage:true,animations:'disabled'});await page.getByRole('button',{name:'取消',exact:true}).click()
    for(const name of ['软件中心','项目管理','实例接入','在线客服','服务组发布','实名用量账户','短信服务','邮件通知','功能与定价','客户功能','购买订单','授权管理','版本发布','支付设置','操作记录'])await navigate(name)
+   if(item.name==='PC-Chrome'){
+    await navigate('短信服务')
+    await page.getByRole('tab',{name:'业务通知模板'}).click()
+    const customerNotice=page.getByRole('row').filter({hasText:'客户'}).filter({hasText:'新订单'})
+    await customerNotice.getByRole('button',{name:'配置模板',exact:true}).click()
+    const notice=page.getByRole('dialog',{name:'新增短信模板'})
+    await expect(notice.getByLabel('模板键')).toHaveValue('notice_user_new_order')
+    await expect(notice.getByLabel('模板键')).toBeDisabled()
+    await notice.getByLabel('阿里云模板 Code').fill('SMS_12345678')
+    await notice.getByRole('button',{name:'保存模板',exact:true}).click()
+    await expect(customerNotice).toContainText('SMS_12345678')
+    await expect(customerNotice).toContainText('草稿')
+    await page.screenshot({path:path.join(output,'PC-Chrome-sms-notice-templates.png'),animations:'disabled'})
+    await page.getByRole('tab',{name:'接入配置'}).click()
+    await expect(page.getByText('让送达结果和扣费回写')).toBeVisible()
+    await page.getByRole('tab',{name:'用量账单'}).click()
+    await expect(page.getByText('阿里云已受理',{exact:false})).toBeVisible()
+    await expect(page.getByText('确认送达',{exact:false})).toBeVisible()
+   }
    await navigate('客户功能');const entitlementRow=dataRows().filter({hasText:'收益对比分析'});await expect(entitlementRow).toContainText('浏览器测试客户');await expect(entitlementRow).toContainText('权益测试实例');await entitlementRow.getByRole('button',{name:'编辑',exact:true}).click();await expect(page.getByRole('dialog').getByLabel('付费功能')).toBeVisible();await page.getByRole('dialog').getByRole('button',{name:'取消',exact:true}).click()
    if(item.name==='PC-Chrome'){
     const switchResponse=page.waitForResponse(response=>response.url().includes('/api/entitlements/'+browserInstance)&&response.request().method()==='PUT')

@@ -35,6 +35,14 @@
             </div>
             <el-alert v-if="!settings.masterKeyConfigured" title="系统加密密钥未就绪，暂时无法保存密钥。" type="warning" :closable="false" show-icon />
             <el-alert v-else-if="!settings.receiptConfigured" title="填写与阿里云回执转发端一致的签名密钥。收到成功回执后才扣费。" type="info" :closable="false" show-icon />
+            <section class="receipt-guide">
+              <strong>让送达结果和扣费回写</strong>
+              <ol>
+                <li>打开 <a href="https://dysms.console.aliyun.com/" target="_blank" rel="noopener noreferrer">阿里云短信控制台</a>，在「通用设置 → 回执配置 → 状态报告接收」开启国内短信 SmsReport 的轻量消息队列模式；把地域和队列名交给部署人员。</li>
+                <li>部署队列消费者，将消息签名转发到本授权中心的 <code>/api/sms/receipts/aliyun</code>。转发端使用与上方相同的签名密钥；不能把此验签路径直接填为阿里云 HTTP 推送地址。</li>
+                <li>核对「用量账单」是否出现回执终态。历史缺回执可用「查阿里云」，需要原手机号以及 RAM 权限 <code>dysms:QuerySendDetails</code>；查询不会重新发短信。</li>
+              </ol>
+            </section>
             <div class="form-actions"><el-button type="primary" :loading="saving" @click="saveSettings">保存接入配置</el-button></div>
           </el-form>
         </el-tab-pane>
@@ -53,6 +61,23 @@
             <el-table-column label="计费" width="105"><template #default="{row}"><el-tag :type="row.billable ? 'success' : 'info'">{{ row.billable ? (row.billing_units || 1) + '条' : '免费' }}</el-tag></template></el-table-column>
             <el-table-column label="状态" width="100"><template #default="{row}"><el-tag :type="row.status==='ACTIVE'?'success':row.status==='RETIRED'?'info':'warning'">{{ row.status }}</el-tag></template></el-table-column>
             <el-table-column label="操作" width="150" fixed="right"><template #default="{row}"><el-button link type="primary" @click="openTemplate(row)">编辑</el-button><el-button link type="danger" @click="deleteTemplate(row)">删除</el-button></template></el-table-column>
+          </el-table>
+        </el-tab-pane>
+
+        <el-tab-pane label="业务通知模板" name="notice">
+          <div class="table-toolbar"><span class="muted">选择场景和角色，填写已审核的阿里云通知模板 Code。实际接收人由客户后台决定。</span>
+            <el-select v-model="noticeGroup" aria-label="通知场景" style="width:200px">
+              <el-option v-for="[key,label] in noticeGroups" :key="key" :label="label" :value="key"/>
+            </el-select>
+          </div>
+          <el-table :data="noticeRows" stripe>
+            <el-table-column prop="roleLabel" label="接收角色" min-width="110"/>
+            <el-table-column prop="sceneLabel" label="业务场景" min-width="165"/>
+            <el-table-column label="阿里云模板 Code" min-width="150"><template #default="{row}">{{ row.template?.provider_template_code || '—' }}</template></el-table-column>
+            <el-table-column label="状态" width="105"><template #default="{row}">
+              <el-tag :type="row.template?.status==='ACTIVE'?'success':row.template?.status==='RETIRED'?'info':'warning'">{{ ({ACTIVE:'已启用',DRAFT:'草稿',RETIRED:'已停用'})[row.template?.status] || '未配置' }}</el-tag>
+            </template></el-table-column>
+            <el-table-column label="操作" width="115"><template #default="{row}"><el-button link type="primary" @click="openTemplate(row.template, row)">{{ row.template ? '编辑' : '配置模板' }}</el-button></template></el-table-column>
           </el-table>
         </el-tab-pane>
 
@@ -100,13 +125,19 @@
         <el-tab-pane label="用量账单" name="usage">
           <div class="table-toolbar"><el-select v-model="usageProject" clearable placeholder="全部项目" @change="loadUsage"><el-option v-for="account in accounts" :key="account.project_id" :value="account.project_id" :label="account.customer_name + ' / ' + account.project_name" /></el-select><el-button :loading="loadingUsage" @click="loadUsage">刷新流水</el-button></div>
           <div v-if="usageSummary" class="usage-summary">
-            <span>回执发送成功 <b>{{ usageSummary.delivered_count }}</b></span>
+            <span>阿里云已受理 <b>{{ usageSummary.provider_accepted_count ?? 0 }}</b></span>
+            <span>等待回执 <b>{{ usageSummary.waiting_receipt_count ?? 0 }}</b></span>
+            <span>确认送达 <b>{{ usageSummary.delivered_count }}</b></span>
             <span>失败 <b>{{ usageSummary.failed_count }}</b></span>
-            <span>待确认 <b>{{ usageSummary.pending_count }}</b></span>
+            <span>预占未结算 <b>{{ usageSummary.pending_count }}</b></span>
             <span>已扣款 <b>{{ money(usageSummary.charged_cents) }}</b></span>
             <span>套餐消耗 <b>{{ usageSummary.package_units }}</b></span>
             <span v-if="usageSummary.legacy_accepted_count">旧版仅受理 <b>{{ usageSummary.legacy_accepted_count }}</b></span>
           </div>
+          <el-alert v-if="usageSummary?.waiting_receipt_count && !usageSummary?.last_confirmed_at"
+            title="有已受理记录，但尚无确认结果。请核对回执配置，或对历史短信点击「查阿里云」。"
+            type="warning" :closable="false" show-icon />
+          <p v-if="usageSummary?.last_confirmed_at" class="muted">最近一次确认结果：{{ time(usageSummary.last_confirmed_at) }}</p>
           <el-table :data="usage" stripe>
             <el-table-column label="时间" min-width="165"><template #default="{row}">{{ time(row.created_at) }}</template></el-table-column>
             <el-table-column prop="instance_name" label="实例" min-width="130" />
@@ -115,7 +146,10 @@
             <el-table-column label="状态" width="128"><template #default="{row}">{{ statusLabel(row) }}</template></el-table-column>
             <el-table-column label="计费" width="130"><template #default="{row}">{{ row.billing_status === 'CHARGED' ? money(row.charge_cents) : row.billing_status === 'RESERVED' ? '待结算' : '未扣款' }}</template></el-table-column>
             <el-table-column prop="error_code" label="错误码" min-width="150" />
-            <el-table-column label="操作" width="110"><template #default="{row}"><el-button v-if="canRelease(row)" link type="warning" @click="releaseUnknown(row)">释放预占</el-button></template></el-table-column>
+            <el-table-column label="操作" min-width="190"><template #default="{row}">
+              <el-button v-if="canReconcile(row)" link type="primary" :loading="checking===row.id" @click="reconcile(row)">查阿里云</el-button>
+              <el-button v-if="canRelease(row)" link type="warning" :disabled="checking===row.id" @click="releaseUnknown(row)">释放预占</el-button>
+            </template></el-table-column>
           </el-table>
         </el-tab-pane>
       </el-tabs>
@@ -124,9 +158,9 @@
     <el-dialog v-model="templateVisible" :title="templateEditing ? '编辑短信模板' : '新增短信模板'" width="min(720px,96vw)">
       <el-form label-position="top">
         <div class="form-grid">
-          <el-form-item label="模板键"><el-input v-model="templateForm.templateKey" :disabled="templateEditing" placeholder="例如 otp_login" /></el-form-item>
+          <el-form-item label="模板键"><el-input v-model="templateForm.templateKey" :disabled="templateEditing || !!noticePreset" placeholder="例如 otp_login" /></el-form-item>
           <el-form-item label="名称"><el-input v-model="templateForm.name" /></el-form-item>
-          <el-form-item label="场景"><el-input v-model="templateForm.scene" placeholder="例如 LOGIN / ORDER" /></el-form-item>
+          <el-form-item label="场景"><el-input v-model="templateForm.scene" :readonly="!!noticePreset" placeholder="例如 LOGIN / ORDER" /></el-form-item>
           <el-form-item label="阿里云模板 Code"><el-input v-model="templateForm.providerTemplateCode" placeholder="SMS_xxx" /></el-form-item>
           <el-form-item label="签名"><el-input v-model="templateForm.signName" placeholder="留空使用默认签名" /></el-form-item>
           <el-form-item label="计费单位"><el-input-number v-model="templateForm.billingUnits" :min="1" :max="10" /></el-form-item>
@@ -135,8 +169,12 @@
         </div>
         <el-form-item label="变量">
           <div class="variable-list">
+            <p v-if="noticePreset" class="muted">按阿里云模板原名选择变量；人员审核没有订单号，退款和提现也不共享金额变量。</p>
             <div v-for="(item,index) in templateVariables" :key="index" class="variable-row">
-              <el-input v-model="item.key" placeholder="变量名，如 code" />
+              <el-select v-if="noticePreset" v-model="item.key" placeholder="选择阿里云模板使用的变量">
+                <el-option v-for="key in noticeVariables" :key="key" :label="key" :value="key"/>
+              </el-select>
+              <el-input v-else v-model="item.key" placeholder="变量名，如 code" />
               <el-input-number v-model="item.maxLength" :min="1" :max="200" />
               <el-checkbox v-model="item.required">必填</el-checkbox>
               <el-button text type="danger" @click="templateVariables.splice(index,1)">删除</el-button>
@@ -205,6 +243,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { noticeCatalog, noticeGroups, noticeVariables } from './sms-notice-catalog.js'
 
 const props = defineProps({ api: Function, refresh: Function })
 const loading = ref(false), saving = ref(false), tab = ref('settings')
@@ -212,6 +251,10 @@ const settings = reactive({ enabled: false, endpoint: 'dysmsapi.aliyuncs.com', a
 const templates = ref([]), packages = ref([]), accounts = ref([]), credentials = ref([]), usage = ref([])
 const usageProject = ref(''), loadingUsage = ref(false), usageSummary = ref(null)
 let usageSequence = 0
+const checking=ref(''), noticeGroup=ref('new_order'), noticePreset=ref(null)
+const noticeRows=computed(()=>noticeCatalog.filter(row=>row.group===noticeGroup.value)
+  .map(row=>({...row,template:templates.value.find(item=>item.template_key===row.key)})))
+const canReconcile=row=>row.status==='ACCEPTED' && row.billing_status==='RESERVED' && !!row.provider_message_id
 
 const templateVisible = ref(false), templateEditing = ref(false), templateForm = reactive({})
 const templateVariables = ref([])
@@ -283,7 +326,8 @@ async function seedTemplates() {
   } catch (error) { ElMessage.error(error.message) }
   finally { saving.value = false }
 }
-function openTemplate(row) {
+function openTemplate(row, preset) {
+  noticePreset.value=preset || noticeCatalog.find(item=>item.key===row?.template_key) || null
   templateEditing.value = !!row
   for (const key of Object.keys(templateForm)) delete templateForm[key]
   Object.assign(templateForm, row ? {
@@ -297,15 +341,16 @@ function openTemplate(row) {
     status: row.status || 'DRAFT',
     minClientVersion: row.min_client_version || '1.16.5'
   } : {
-    templateKey: '', name: '', scene: '', signName: '', providerTemplateCode: '',
+    templateKey: preset?.key || '', name: preset?.name || '', scene: preset?.sceneLabel || '', signName: '', providerTemplateCode: '',
     billingUnits: 1, billable: true, status: 'DRAFT', minClientVersion: '1.16.5'
   })
   templateVariables.value = (row?.variables || []).map(item => ({ key: item.key, maxLength: item.maxLength || 40, required: item.required !== false }))
-  if (!templateVariables.value.length) templateVariables.value.push({ key: 'code', maxLength: 40, required: true })
+  if (!row && !noticePreset.value) templateVariables.value.push({ key: 'code', maxLength: 40, required: true })
   templateVisible.value = true
 }
 async function saveTemplate() {
   if (!templateForm.templateKey || !templateForm.name) return ElMessage.warning('请填写模板键和名称')
+  if (noticePreset.value && templateForm.status==='ACTIVE' && !/^SMS_[0-9]+$/.test(templateForm.providerTemplateCode.trim())) return ElMessage.warning('请先填写已审核的阿里云模板 Code')
   const body = { ...templateForm, variables: templateVariables.value.filter(item => item.key.trim()) }
   saving.value = true
   try {
@@ -418,6 +463,20 @@ async function rotateCredential(row) {
     await load()
   } catch (error) { if (error?.message && error !== 'cancel') ElMessage.error(error.message) }
 }
+async function reconcile(row) {
+  if(checking.value || !canReconcile(row))return
+  checking.value=row.id
+  try {
+    const {value}=await ElMessageBox.prompt('输入这条记录原接收的完整手机号。仅用于向阿里云核对，不会补发或保存号码。确认送达才扣费。','核对发送结果',{
+      inputType:'password',inputPattern:/^1[3-9][0-9]{9}$/,inputErrorMessage:'请输入原接收手机号',confirmButtonText:'查询并核对'
+    })
+    const result=await props.api('/sms/requests/'+encodeURIComponent(row.id)+'/reconcile',{method:'POST',body:{phone:value}})
+    if(result.checked) ElMessage.success(result.status==='DELIVERED'?'已确认送达并更新账本':result.status==='FAILED'?'已确认失败并更新账本':'账本已更新')
+    else ElMessage.info('阿里云尚未返回可匹配的终态，账本未手工改写')
+    await loadUsage()
+  } catch(e) { if(e?.message) ElMessage.error(e.message) }
+  finally { checking.value='' }
+}
 async function releaseUnknown(row) {
   try { await ElMessageBox.confirm('确认上游没有受理后释放预占？错误释放可能造成漏计费。', '释放未知请求', { type: 'warning' }); await props.api('/sms/requests/' + row.id + '/release', { method: 'POST' }); await loadUsage(); ElMessage.success('已释放预占') }
   catch (error) { if (error?.message && error !== 'cancel') ElMessage.error(error.message) }
@@ -445,4 +504,8 @@ onMounted(load)
 .credential-secret { margin-top:18px; }
 .muted { color:#78869a; font-size:13px; }
 @media(max-width:720px){.form-grid{grid-template-columns:1fr}.sms-head{align-items:flex-start;flex-direction:column}.table-toolbar{align-items:flex-start;flex-direction:column}.variable-row{grid-template-columns:1fr 90px auto}.variable-row .el-checkbox{grid-column:1}.variable-row .el-button{grid-column:2/4}}
+.receipt-guide{margin-top:18px;color:var(--el-text-color-regular);line-height:1.65}
+.receipt-guide ol{padding-inline-start:22px;margin:8px 0}
+.receipt-guide a{color:var(--el-color-primary)}
+.receipt-guide code{overflow-wrap:anywhere}
 </style>

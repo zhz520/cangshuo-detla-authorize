@@ -15,6 +15,7 @@ FROM node:24-bookworm-slim
 WORKDIR /app
 COPY --from=build --chown=node:node /app/dist ./dist
 COPY --chown=node:node server ./server
+COPY --chown=node:node src/sms-notice-catalog.js ./src/sms-notice-catalog.js
 COPY --chown=node:node scripts ./scripts
 COPY --chown=node:node package.json ./package.json
 COPY --from=runtime-deps --chown=node:node /app/node_modules ./node_modules

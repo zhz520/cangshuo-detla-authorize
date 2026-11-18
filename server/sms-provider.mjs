@@ -40,6 +40,47 @@ export class AliyunSmsProvider {
       Version: API_VERSION
     }
     if (outId) params.OutId = outId
+    const {response,payload} = await this.rpc(params, accessKeySecret, timeoutMs)
+    const code = String(payload?.Code || '')
+    if (response.ok && code.toUpperCase() === 'OK') {
+      if (!payload?.BizId) throw new SmsProviderUncertain('SMS_PROVIDER_MISSING_BIZ_ID')
+      return {
+        accepted: true,
+        code: 'OK',
+        bizId: String(payload?.BizId || ''),
+        requestId: String(payload?.RequestId || '')
+      }
+    }
+    if (response.status >= 500) throw new SmsProviderUncertain('SMS_PROVIDER_UNAVAILABLE')
+    return {
+      accepted: false,
+      code: code || 'SMS_PROVIDER_REJECTED',
+      message: String(payload?.Message || 'provider rejected').slice(0, 200),
+      requestId: String(payload?.RequestId || '')
+    }
+  }
+  async queryDelivery({ accessKeyId, accessKeySecret, phone, sendDate, bizId, outId, timeoutMs = 8000 }) {
+    const {response,payload} = await this.rpc({
+      AccessKeyId:accessKeyId, Action:'QuerySendDetails', Format:'JSON',
+      PhoneNumber:phone, SendDate:sendDate, BizId:bizId, CurrentPage:'1', PageSize:'10',
+      RegionId:'cn-hangzhou', SignatureMethod:'HMAC-SHA1', SignatureNonce:randomUUID(),
+      SignatureVersion:'1.0', Timestamp:aliyunTimestamp(), Version:API_VERSION
+    }, accessKeySecret, timeoutMs)
+    if (!response.ok || payload?.Code !== 'OK') {
+      if (['Forbidden.RAM','Forbidden','isv.RAM_PERMISSION_DENY','NoPermission'].includes(payload?.Code))
+        throw new Error('SMS_QUERY_PERMISSION_REQUIRED')
+      throw new SmsProviderUncertain('SMS_QUERY_FAILED')
+    }
+    const entries = payload?.SmsSendDetailDTOs?.SmsSendDetailDTO
+    const matched = Array.isArray(entries) ? entries.filter(row => String(row.OutId || '') === outId) : []
+    if (matched.length !== 1) return null
+    const status = Number(matched[0].SendStatus)
+    if (status === 3) return 'DELIVERED'
+    if (status === 2) return 'FAILED'
+    return null
+  }
+
+  async rpc(params, accessKeySecret, timeoutMs) {
     const canonical = Object.keys(params).sort()
       .map(key => percentEncode(key) + '=' + percentEncode(params[key]))
       .join('&')
@@ -65,22 +106,6 @@ export class AliyunSmsProvider {
     } catch {
       throw new SmsProviderUncertain('SMS_PROVIDER_RESPONSE_INVALID')
     }
-    const code = String(payload?.Code || '')
-    if (response.ok && code.toUpperCase() === 'OK') {
-      if (!payload?.BizId) throw new SmsProviderUncertain('SMS_PROVIDER_MISSING_BIZ_ID')
-      return {
-        accepted: true,
-        code: 'OK',
-        bizId: String(payload?.BizId || ''),
-        requestId: String(payload?.RequestId || '')
-      }
-    }
-    if (response.status >= 500) throw new SmsProviderUncertain('SMS_PROVIDER_UNAVAILABLE')
-    return {
-      accepted: false,
-      code: code || 'SMS_PROVIDER_REJECTED',
-      message: String(payload?.Message || 'provider rejected').slice(0, 200),
-      requestId: String(payload?.RequestId || '')
-    }
+    return {response,payload}
   }
 }

@@ -94,3 +94,32 @@ test('SMS admin and signed client routes are wired without an authenticated brow
     fixture.store.close()
   }
 })
+
+
+test('SMS reconciliation is operator-only, CSRF protected, and settles a verified failure without a new send', async () => {
+  const fixture=setup()
+  const server=createAuthorityServer(fixture.store,{sms:fixture.sms})
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve))
+  const base='http://127.0.0.1:'+server.address().port
+  try {
+    const row=await fixture.sms.send(fixture.instance,{templateKey:'otp_login',phone:'13800138000',variables:{code:'123456'}},'receipt-http-check')
+    fixture.provider.queryDelivery=async ()=> 'FAILED'
+    const url=base+'/api/sms/requests/'+row.requestId+'/reconcile'
+    const request=headers=>fetch(url,{method:'POST',headers:{'content-type':'application/json',...headers},body:JSON.stringify({phone:'13800138000'})})
+    assert.equal((await request({})).status,401)
+    const session=await login(base)
+    assert.equal((await request({cookie:session.cookie})).status,403)
+    const response=await request({cookie:session.cookie,'x-csrf-token':session.csrf})
+    assert.equal(response.status,200)
+    const result=await response.json()
+    assert.equal(result.status,'FAILED')
+    assert.equal(result.billing.status,'RELEASED')
+    assert.equal(result.billing.chargedCents,0)
+    assert.equal(fixture.provider.calls,1)
+    assert.equal(fixture.sms.accountDetail(fixture.project).reserved_cents,0)
+    assert.equal(fixture.sms.accountDetail(fixture.project).balance_cents,100)
+  } finally {
+    await new Promise(resolve=>server.close(resolve))
+    fixture.store.close()
+  }
+})

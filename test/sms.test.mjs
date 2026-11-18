@@ -196,3 +196,65 @@ test('missing business templates and missing variables are rejected before send 
     assert.equal(f.service.accountDetail(f.project).reserved_cents, 0)
   } finally { f.store.close() }
 })
+
+
+test('business templates use fixed role and scene keys, without accepting OTP variables', () => {
+  const f=setup()
+  const template={templateKey:'notice_cs_order_status',name:'接单进度',scene:'ignored',providerTemplateCode:'SMS_12345678',variables:[{key:'status',required:true}],status:'ACTIVE'}
+  try{
+    assert.throws(()=>f.service.saveTemplate({...template,templateKey:'notice_cs_made_up'}),/角色与场景/)
+    assert.throws(()=>f.service.saveTemplate({...template,variables:[{key:'code',required:true}]}),/变量/)
+    assert.throws(()=>f.service.saveTemplate({...template,providerTemplateCode:''}),/模板 Code/)
+    f.service.saveTemplate(template)
+    assert.equal(f.service.templates().find(row=>row.template_key===template.templateKey).scene,'ORDER_STATUS')
+  }finally{f.store.close()}
+})
+
+test('read-only Aliyun lookup matches original number and settles once without resending', async () => {
+  const f=setup()
+  try {
+    let lookups=0
+    let outcome=null
+    const result=await f.service.send(f.instance,{templateKey:'otp_login',phone:'13800138000',variables:{code:'123456'}},'lookup-sms-0001')
+    f.provider.queryDelivery=async p=>{
+      lookups++
+      assert.equal(p.phone,'13800138000')
+      assert.equal(p.bizId,'biz-1')
+      assert.equal(p.outId,result.requestId)
+      assert.match(p.sendDate,/^[0-9]{8}$/)
+      return outcome
+    }
+    await assert.rejects(f.service.reconcileDelivery(result.requestId,{phone:'13900139000'}),/手机号与记录不匹配/)
+    assert.equal(lookups,0)
+    assert.equal((await f.service.reconcileDelivery(result.requestId,{phone:'13800138000'})).checked,false)
+    assert.equal(f.service.usageSummary(f.project).waiting_receipt_count,1)
+    outcome='DELIVERED'
+    const confirmed=await f.service.reconcileDelivery(result.requestId,{phone:'13800138000'})
+    assert.equal(confirmed.status,'DELIVERED')
+    assert.equal(confirmed.billing.chargedCents,5)
+    assert.equal(f.service.usageSummary(f.project).provider_accepted_count,1)
+    assert.equal(f.service.usageSummary(f.project).waiting_receipt_count,0)
+    assert.equal(receipt(f.service,result).processed,0)
+    await assert.rejects(f.service.reconcileDelivery(result.requestId,{phone:'13800138000'}),/等待回执/)
+    assert.equal(f.calls,1)
+  } finally { f.store.close() }
+})
+
+test('Aliyun QuerySendDetails only trusts the matching OutId and terminal status', async () => {
+  const {AliyunSmsProvider}=await import('../server/sms-provider.mjs')
+  let rows=[]
+  const client=new AliyunSmsProvider({fetchImpl:async (url,init)=>{
+    assert.equal(new URL(url).hostname,'dysmsapi.aliyuncs.com')
+    assert.equal(init.body.get('Action'),'QuerySendDetails')
+    assert.equal(init.body.get('BizId'),'biz-test')
+    assert.ok(init.body.get('Signature'))
+    return {ok:true,json:async()=>({Code:'OK',SmsSendDetailDTOs:{SmsSendDetailDTO:rows}})}
+  }})
+  const args={accessKeyId:'test',accessKeySecret:'test',phone:'13800138000',sendDate:'20261118',bizId:'biz-test',outId:'ours'}
+  rows=[{OutId:'foreign',SendStatus:3},{OutId:'ours',SendStatus:1}]
+  assert.equal(await client.queryDelivery(args),null)
+  rows[1].SendStatus=2
+  assert.equal(await client.queryDelivery(args),'FAILED')
+  rows[1].SendStatus=3
+  assert.equal(await client.queryDelivery(args),'DELIVERED')
+})
