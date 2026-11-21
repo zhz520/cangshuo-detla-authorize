@@ -2,7 +2,7 @@ import {
   createCipheriv, createDecipheriv, createHash, createHmac,
   randomBytes, randomUUID, timingSafeEqual
 } from 'node:crypto'
-import { fail, identifier, integer, text } from './store.mjs'
+import { compareVersions, fail, identifier, integer, text } from './store.mjs'
 import { AliyunSmsProvider, SmsProviderUncertain } from './sms-provider.mjs'
 import { noticeCatalog, noticeVariables } from '../src/sms-notice-catalog.js'
 
@@ -21,6 +21,22 @@ const sha256 = value => createHash('sha256').update(String(value)).digest('hex')
 const number = (value, fallback = 0) => {
   const parsed = Number(value)
   return Number.isSafeInteger(parsed) ? parsed : fallback
+}
+
+function requireClientVersion(value, minimum) {
+  const version = typeof value === 'string' ? value.trim() : ''
+  if (!version) fail('短信发送缺少客户端版本', 400, 'SMS_CLIENT_VERSION_REQUIRED')
+  if (version.length > 40 || /[\r\n]/.test(version))
+    fail('客户端版本号格式不正确，请按客户后台显示填写', 400, 'SMS_CLIENT_VERSION_INVALID')
+  try { compareVersions(version, version) }
+  catch { fail('客户端版本号格式不正确，请按客户后台显示填写', 400, 'SMS_CLIENT_VERSION_INVALID') }
+  const required = String(minimum || '').trim()
+  if (!required) return version
+  try { compareVersions(required, required) }
+  catch { fail('短信模板最低客户端版本配置不正确', 500, 'SMS_TEMPLATE_VERSION_INVALID') }
+  if (compareVersions(version, required) < 0)
+    fail('短信模板要求客户端 ' + required + ' 或更新版本，请先升级客户系统', 409, 'SMS_CLIENT_VERSION_TOO_LOW')
+  return version
 }
 
 export function keyBytes(value) {
@@ -235,6 +251,8 @@ export class SmsService {
     if (!TEMPLATE_STATUS.has(status)) fail('模板状态不正确')
     if (status === 'ACTIVE' && !providerTemplateCode) fail('启用模板前请填写阿里云模板 Code')
     const minVersion = optionalText(body.minClientVersion, '最低客户端版本', 40) || '1.16.5'
+    try { compareVersions(minVersion, minVersion) }
+    catch { fail('最低客户端版本格式不正确，请按 x.y.z 填写', 400, 'SMS_MIN_CLIENT_VERSION_INVALID') }
     const existing = this.db.prepare('SELECT id FROM sms_templates WHERE template_key=?').get(key)
     const id = existing?.id || randomUUID()
     const time = this.now()
@@ -550,6 +568,8 @@ export class SmsService {
       if (existing.status === 'RESERVED' && Date.now() - Date.parse(existing.updated_at) > 60000) this.markUnknown(existing.id, 'SMS_STALE_RESERVATION')
       return this.publicRequest(this.db.prepare('SELECT * FROM sms_requests WHERE id=?').get(existing.id))
     }
+    // Replays return above; only new requests are gated so a later minimum change never resends or recharges.
+    requireClientVersion(body.clientVersion, template.min_client_version)
     const provider = this.providerConfig()
     const units = Math.max(1, Number(template.billing_units) || 1)
     const price = Math.max(0, Number(account.unit_price_cents) || 0)

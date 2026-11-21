@@ -286,6 +286,9 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
         if (route === '/api/usage/accounts' && method === 'GET') return json(usageBilling.accounts())
         if (route === '/api/usage/requests' && method === 'GET') return json(usageBilling.requests(url.searchParams.get('instanceId'), url.searchParams.get('limit')))
         if (route === '/api/usage/ledger' && method === 'GET') return json(usageBilling.ledger(url.searchParams.get('instanceId'), url.searchParams.get('limit')))
+        let usageMatch
+        if ((usageMatch = route.match(/^\/api\/usage\/accounts\/([a-f\d-]+)\/release-stale$/)) && method === 'POST') return json(usageBilling.releaseStale(usageMatch[1], body.olderThanMs, session.username))
+        if ((usageMatch = route.match(/^\/api\/usage\/requests\/([a-f\d-]+)\/release$/)) && method === 'POST') return json(usageBilling.releaseRequest(usageMatch[1], session.username))
         if (route === '/api/orders/preview' && method === 'GET') return json(store.orderPreview(url.searchParams.get('instanceId'), url.searchParams.get('moduleId')))
         if (route === '/api/orders' && method === 'POST') return json(store.createOrder(body, session.username), 201)
         if (route === '/api/releases' && method === 'POST') return json(store.releaseService.create(body, session.username), 201)

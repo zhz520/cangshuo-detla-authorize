@@ -3,6 +3,8 @@ import { fail, identifier, integer, text } from './store.mjs'
 
 const stamp = () => new Date().toISOString()
 const MODES = new Set(['METERED', 'PACKAGE', 'HYBRID'])
+// A provider call can still be in flight inside this window; manual cleanup must not race it.
+const MIN_STALE_RELEASE_MS = 60000
 
 export class UsageBilling {
   constructor(store, {
@@ -26,14 +28,33 @@ export class UsageBilling {
   credit(instanceId, amountCents, reference, actor) {
     const id = text(instanceId, '实例编号', 36)
     if (!Number.isSafeInteger(amountCents) || amountCents <= 0) fail('充值金额必须为正整数分')
+    const creditReference = text(reference || '', '充值引用', 128)
     return this.store.transaction(() => {
       this.ensure(id)
       const account = this.db.prepare('SELECT * FROM service_accounts WHERE instance_id=?').get(id)
+      // Non-empty references are the operator-visible idempotency key for manual credits.
+      const existing = this.db.prepare("SELECT * FROM service_ledger WHERE instance_id=? AND type='CREDIT' AND reference=? ORDER BY created_at,id LIMIT 1").get(id, creditReference)
+      if (existing) {
+        if (existing.amount_cents !== amountCents) fail('充值引用已用于其他金额，请使用新的引用', 409)
+        return {
+          instanceId: id,
+          balanceCents: account.balance_cents,
+          reservedCents: account.reserved_cents,
+          idempotent: true,
+          reference: creditReference
+        }
+      }
       const balance = account.balance_cents + amountCents
       this.db.prepare('UPDATE service_accounts SET balance_cents=?,updated_at=? WHERE instance_id=?').run(balance, stamp(), id)
-      this.db.prepare('INSERT INTO service_ledger VALUES (?,?,?,?,?,?,?)').run(randomUUID(), id, 'CREDIT', amountCents, balance, text(reference || '', '充值引用', 128), stamp())
-      this.store.audit(actor, 'SERVICE_CREDIT', id, { amountCents })
-      return { instanceId: id, balanceCents: balance, reservedCents: account.reserved_cents }
+      this.db.prepare('INSERT INTO service_ledger VALUES (?,?,?,?,?,?,?)').run(randomUUID(), id, 'CREDIT', amountCents, balance, creditReference, stamp())
+      this.store.audit(actor, 'SERVICE_CREDIT', id, { amountCents, reference: creditReference, idempotent: false })
+      return {
+        instanceId: id,
+        balanceCents: balance,
+        reservedCents: account.reserved_cents,
+        idempotent: false,
+        reference: creditReference
+      }
     })
   }
 
@@ -146,6 +167,87 @@ export class UsageBilling {
     } else if (request.billing_mode === 'METERED' && request.price_cents > 0) {
       this.db.prepare('UPDATE service_accounts SET reserved_cents=MAX(0,reserved_cents-?),updated_at=? WHERE instance_id=?').run(request.price_cents, stamp(), request.instance_id)
     }
+  }
+
+  releaseHoldStrict(request) {
+    if (request.package_balance_id) {
+      const changed = this.db.prepare('UPDATE identity_package_balances SET reserved_count=reserved_count-1,updated_at=? WHERE id=? AND reserved_count>=1')
+        .run(stamp(), request.package_balance_id).changes
+      if (!changed) fail('实名核验套餐预占状态异常，请先核对套餐余额', 409)
+    } else if (request.billing_mode === 'METERED' && request.price_cents > 0) {
+      const changed = this.db.prepare('UPDATE service_accounts SET reserved_cents=reserved_cents-?,updated_at=? WHERE instance_id=? AND reserved_cents>=?')
+        .run(request.price_cents, stamp(), request.instance_id, request.price_cents).changes
+      if (!changed) fail('实名核验账户预占状态异常，请先核对账户余额', 409)
+    }
+  }
+
+  releaseRequest(requestId, actor, { minAgeMs = MIN_STALE_RELEASE_MS, reason = 'MANUAL' } = {}) {
+    const id = text(requestId, '核验请求编号', 64)
+    const operator = text(actor, '操作人', 80)
+    const minimumAge = integer(minAgeMs, '最小释放间隔（毫秒）', 0, 365 * 86400000)
+    const releaseReason = text(reason, '释放原因', 64)
+    return this.store.transaction(() => {
+      const request = this.db.prepare('SELECT * FROM verification_requests WHERE id=?').get(id)
+      if (!request) fail('核验请求不存在', 404)
+      if (request.status === 'RELEASED') {
+        return { instanceId: request.instance_id, requestId: id, released: false, idempotent: true, request }
+      }
+      if (request.status !== 'RESERVED') fail('仅 RESERVED 核验请求可以人工释放', 409)
+      const age = Date.now() - Date.parse(request.updated_at)
+      if (!Number.isFinite(age) || age < minimumAge) {
+        return {
+          instanceId: request.instance_id,
+          requestId: id,
+          released: false,
+          idempotent: true,
+          skipped: 'TOO_RECENT',
+          ageMs: Number.isFinite(age) ? Math.max(0, Math.round(age)) : null,
+          request
+        }
+      }
+      this.releaseHoldStrict(request)
+      const result = releaseReason === 'STALE' ? 'STALE_RELEASE' : 'MANUAL_RELEASE'
+      const changed = this.db.prepare("UPDATE verification_requests SET status='RELEASED',result=?,updated_at=? WHERE id=? AND status='RESERVED'")
+        .run(result, stamp(), id).changes
+      if (!changed) fail('核验请求状态已变化，请刷新后重试', 409)
+      this.store.audit(operator, 'SERVICE_REQUEST_RELEASE', request.instance_id, {
+        requestId: id,
+        billingMode: request.billing_mode,
+        priceCents: request.price_cents,
+        reason: releaseReason,
+        ageMs: Math.max(0, Math.round(age))
+      })
+      return {
+        instanceId: request.instance_id,
+        requestId: id,
+        released: true,
+        idempotent: false,
+        request: this.db.prepare('SELECT * FROM verification_requests WHERE id=?').get(id)
+      }
+    })
+  }
+
+  releaseStale(instanceId, olderThanMs, actor) {
+    const id = text(instanceId, '实例编号', 36)
+    const operator = text(actor, '操作人', 80)
+    const requestedAge = integer(olderThanMs, '陈旧预留阈值（毫秒）', 0, 365 * 86400000)
+    const minimumAge = Math.max(requestedAge, MIN_STALE_RELEASE_MS)
+    if (!this.db.prepare('SELECT id FROM instances WHERE id=?').get(id)) fail('实例不存在', 404)
+    const cutoff = new Date(Date.now() - minimumAge).toISOString()
+    const candidates = this.db.prepare("SELECT id FROM verification_requests WHERE instance_id=? AND status='RESERVED' AND updated_at<=? ORDER BY updated_at").all(id, cutoff)
+    const released = []
+    const skipped = []
+    const failed = []
+    for (const candidate of candidates) {
+      try {
+        const result = this.releaseRequest(candidate.id, operator, { minAgeMs: minimumAge, reason: 'STALE' })
+        if (result.released) released.push(result.request)
+        else skipped.push({ requestId: candidate.id, reason: result.skipped || 'NOT_RELEASED' })
+      } catch (error) {
+        failed.push({ requestId: candidate.id, message: error.message })
+      }
+    }
+    return { instanceId: id, olderThanMs: minimumAge, cutoff, releasedCount: released.length, released, skipped, failed }
   }
 
   activePackages(instanceId) {

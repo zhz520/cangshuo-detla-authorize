@@ -59,6 +59,7 @@
             <el-button link @click="openCredit(row)">充值</el-button>
             <el-button link @click="openGrant(row)">发套餐</el-button>
             <el-button link @click="showDetail(row)">流水</el-button>
+            <el-button link type="warning" @click="releaseStale(row)">释放陈旧预占</el-button>
           </template></el-table-column>
         </el-table>
       </div>
@@ -130,7 +131,7 @@
 
   <el-drawer v-model="detailVisible" :title="(current?.instance_name || '') + ' · 核验流水'" size="min(92vw, 760px)">
     <el-tabs v-model="detailTab">
-      <el-tab-pane label="核验请求" name="requests"><el-table :data="requests" stripe><el-table-column prop="status" label="状态" width="105"/><el-table-column prop="billing_mode" label="计费" width="100"/><el-table-column label="单价" width="100"><template #default="{row}">{{ money(row.price_cents) }}</template></el-table-column><el-table-column label="结果" min-width="120"><template #default="{row}">{{ resultLabel(row.result) }}</template></el-table-column><el-table-column prop="provider_request_id" label="供应商请求号" min-width="180" show-overflow-tooltip/><el-table-column label="时间" min-width="170"><template #default="{row}">{{ time(row.created_at) }}</template></el-table-column></el-table></el-tab-pane>
+      <el-tab-pane label="核验请求" name="requests"><el-table :data="requests" stripe><el-table-column prop="status" label="状态" width="105"/><el-table-column prop="billing_mode" label="计费" width="100"/><el-table-column label="单价" width="100"><template #default="{row}">{{ money(row.price_cents) }}</template></el-table-column><el-table-column label="结果" min-width="120"><template #default="{row}">{{ resultLabel(row.result) }}</template></el-table-column><el-table-column prop="provider_request_id" label="供应商请求号" min-width="180" show-overflow-tooltip/><el-table-column label="时间" min-width="170"><template #default="{row}">{{ time(row.created_at) }}</template></el-table-column><el-table-column label="操作" width="100" fixed="right"><template #default="{row}"><el-button v-if="row.status === 'RESERVED'" link type="warning" @click="releaseOne(row)">释放</el-button><span v-else class="muted">—</span></template></el-table-column></el-table></el-tab-pane>
       <el-tab-pane label="资金流水" name="ledger"><el-table :data="ledger" stripe><el-table-column prop="type" label="类型" width="110"/><el-table-column label="金额" width="110"><template #default="{row}">{{ money(row.amount_cents) }}</template></el-table-column><el-table-column label="余额" width="110"><template #default="{row}">{{ money(row.balance_after) }}</template></el-table-column><el-table-column prop="reference" label="引用" min-width="170"/><el-table-column label="时间" min-width="170"><template #default="{row}">{{ time(row.created_at) }}</template></el-table-column></el-table></el-tab-pane>
     </el-tabs>
   </el-drawer>
@@ -249,6 +250,24 @@ async function showDetail(row) {
   current.value = row; detailTab.value = 'requests'; detailVisible.value = true
   try { ;[requests.value, ledger.value] = await Promise.all([props.api('/usage/requests?instanceId=' + encodeURIComponent(row.instance_id)), props.api('/usage/ledger?instanceId=' + encodeURIComponent(row.instance_id))]) }
   catch (error) { ElMessage.error(error.message) }
+}
+async function releaseStale(row) {
+  try {
+    await ElMessageBox.confirm('释放该实例超过 10 分钟仍处于预占状态的实名核验请求？只释放预占，不自动重试供应商。', '释放陈旧预占', { type: 'warning' })
+    const result = await props.api('/usage/accounts/' + encodeURIComponent(row.instance_id) + '/release-stale', { method: 'POST', body: { olderThanMs: 600000 } })
+    await load()
+    if (detailVisible.value) await showDetail(row)
+    ElMessage.success('已释放 ' + (result.releasedCount || 0) + ' 条陈旧预占')
+  } catch (error) { if (error !== 'cancel' && error?.message !== 'cancel') ElMessage.error(error.message || '释放失败') }
+}
+async function releaseOne(row) {
+  try {
+    await ElMessageBox.confirm('确认为该请求释放预占？释放后不会自动重试供应商。', '释放实名预占', { type: 'warning' })
+    await props.api('/usage/requests/' + encodeURIComponent(row.id) + '/release', { method: 'POST' })
+    if (current.value) await showDetail(current.value)
+    await load()
+    ElMessage.success('预占已释放')
+  } catch (error) { if (error !== 'cancel' && error?.message !== 'cancel') ElMessage.error(error.message || '释放失败') }
 }
 onMounted(load)
 </script>

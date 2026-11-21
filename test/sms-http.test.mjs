@@ -63,7 +63,7 @@ test('SMS admin and signed client routes are wired without an authenticated brow
     assert.equal(settingsResponse.status, 200)
     assert.equal((await settingsResponse.json()).enabled, true)
 
-    const body = { instanceId: fixture.instance, templateKey: 'otp_login', phone: '13800138000', variables: { code: '123456' } }
+    const body = { instanceId: fixture.instance, templateKey: 'otp_login', phone: '13800138000', variables: { code: '123456' }, clientVersion: '1.16.5' }
     const raw = JSON.stringify(body)
     const sendResponse = await fetch(base + '/api/sms/v1/send', {
       method: 'POST', headers: { ...signedHeaders(fixture.instance, fixture.credential.secret, 'POST', '/api/sms/v1/send', raw, 'nonce-http-test-1', 'sms-key-http-1'), 'idempotency-key': 'sms-key-http-1' },
@@ -100,13 +100,64 @@ test('SMS admin and signed client routes are wired without an authenticated brow
 })
 
 
+test('SMS send returns explicit 4xx for missing or low client version before billing or provider call', async () => {
+  const fixture = setup()
+  fixture.sms.saveTemplate({
+    templateKey: 'otp_login', name: '登录验证码', scene: 'LOGIN', providerTemplateCode: 'SMS_HTTP',
+    variables: [{ key: 'code', required: true, maxLength: 6 }], status: 'ACTIVE', minClientVersion: '1.17.0'
+  }, 'owner')
+  const server = createAuthorityServer(fixture.store, { sms: fixture.sms })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  const base = 'http://127.0.0.1:' + server.address().port
+  const send = async (body, nonce, key) => {
+    const raw = JSON.stringify(body)
+    const response = await fetch(base + '/api/sms/v1/send', {
+      method: 'POST',
+      headers: { ...signedHeaders(fixture.instance, fixture.credential.secret, 'POST', '/api/sms/v1/send', raw, nonce, key), 'idempotency-key': key },
+      body: raw
+    })
+    return { response, value: await response.json() }
+  }
+  const body = { instanceId: fixture.instance, templateKey: 'otp_login', phone: '13800138000', variables: { code: '123456' } }
+  try {
+    const low = await send({ ...body, clientVersion: '1.16.5' }, 'nonce-version-low', 'sms-version-http-low')
+    assert.equal(low.response.status, 409)
+    assert.equal(low.value.errorCode, 'SMS_CLIENT_VERSION_TOO_LOW')
+    assert.match(low.value.message, /1\.17\.0/)
+
+    const missing = await send(body, 'nonce-version-missing', 'sms-version-http-missing')
+    assert.equal(missing.response.status, 400)
+    assert.equal(missing.value.errorCode, 'SMS_CLIENT_VERSION_REQUIRED')
+
+    assert.equal(fixture.provider.calls, 0)
+    assert.equal(fixture.sms.accountDetail(fixture.project).reserved_cents, 0)
+    assert.equal(fixture.sms.accountDetail(fixture.project).balance_cents, 100)
+    assert.equal(fixture.store.db.prepare('SELECT COUNT(*) AS count FROM sms_requests').get().count, 0)
+
+    const accepted = await send({ ...body, clientVersion: '1.17.0' }, 'nonce-version-ok', 'sms-version-http-ok')
+    assert.equal(accepted.response.status, 200)
+    assert.equal(accepted.value.status, 'ACCEPTED')
+    assert.equal(fixture.provider.calls, 1)
+
+    const replay = await send({ ...body, clientVersion: '1.17.0' }, 'nonce-version-replay', 'sms-version-http-ok')
+    assert.equal(replay.response.status, 200)
+    assert.equal(replay.value.requestId, accepted.value.requestId)
+    assert.equal(fixture.provider.calls, 1)
+    assert.equal(fixture.store.db.prepare('SELECT COUNT(*) AS count FROM sms_requests').get().count, 1)
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    fixture.store.close()
+  }
+})
+
+
 test('SMS reconciliation is operator-only, CSRF protected, and settles a verified failure without a new send', async () => {
   const fixture=setup()
   const server=createAuthorityServer(fixture.store,{sms:fixture.sms})
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve))
   const base='http://127.0.0.1:'+server.address().port
   try {
-    const row=await fixture.sms.send(fixture.instance,{templateKey:'otp_login',phone:'13800138000',variables:{code:'123456'}},'receipt-http-check')
+    const row=await fixture.sms.send(fixture.instance,{templateKey:'otp_login',phone:'13800138000',variables:{code:'123456'},clientVersion:'1.16.5'},'receipt-http-check')
     fixture.provider.queryDelivery=async ()=> 'FAILED'
     const url=base+'/api/sms/requests/'+row.requestId+'/reconcile'
     const request=headers=>fetch(url,{method:'POST',headers:{'content-type':'application/json',...headers},body:JSON.stringify({phone:'13800138000'})})
@@ -134,7 +185,7 @@ test('Aliyun HTTP receipt push is token protected, verified against QuerySendDet
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
   const base = 'http://127.0.0.1:' + server.address().port
   try {
-    const row = await fixture.sms.send(fixture.instance, { templateKey: 'otp_login', phone: '13800138000', variables: { code: '123456' } }, 'receipt-http-push')
+    const row = await fixture.sms.send(fixture.instance, { templateKey: 'otp_login', phone: '13800138000', variables: { code: '123456' }, clientVersion: '1.16.5' }, 'receipt-http-push')
     const payload = JSON.stringify([{
       phone_number: '13800138000', send_time: String(Date.now()), biz_id: 'biz-http',
       out_id: row.requestId, success: true, err_code: 'DELIVERED'
