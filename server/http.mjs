@@ -239,6 +239,11 @@ export function createAuthorityServer(store, { secureCookie = false, staticDirec
         if (route.startsWith('/api/support-admin/')) return await support.owner(route, method, body, url.searchParams, session.username, json, response)
         if (route === '/api/logout' && method === 'POST') { store.logout(token); response.setHeader('Set-Cookie', 'authority_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'); return json({ ok: true }) }
         if (route === '/api/data' && method === 'GET') return json(store.lists())
+        if (route === '/api/wechat-template-schemes' && method === 'GET') return json(store.management.wechatTemplateSchemes(url.searchParams.get('productId') || null))
+        if (route === '/api/wechat-template-schemes' && method === 'POST') return json(store.management.saveWechatTemplateScheme(body, session.username), 201)
+        let wechatSchemeMatch
+        if ((wechatSchemeMatch = route.match(/^\/api\/wechat-template-schemes\/([0-9a-f-]{36})$/)) && method === 'PUT') return json(store.management.saveWechatTemplateScheme(body, session.username, wechatSchemeMatch[1]))
+        if ((wechatSchemeMatch = route.match(/^\/api\/wechat-template-schemes\/([0-9a-f-]{36})$/)) && method === 'DELETE') return json(store.management.deleteWechatTemplateScheme(wechatSchemeMatch[1], session.username))
         if (route === '/api/sms/settings' && method === 'GET') return json(sms.settings())
         if (route === '/api/sms/settings' && method === 'PUT') return json(sms.saveSettings(body, session.username))
         if (route === '/api/usage/provider' && method === 'GET') return json(identityProvider.settings())

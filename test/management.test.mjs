@@ -85,6 +85,26 @@ test('one release notification sends one copy per operator address across every 
   assert.deepEqual(new Set(rows.filter(row=>row.project_id).map(row=>row.project_id)),new Set([project,second]))
  }finally{f.close()}
 })
+test('公众号模板方案只发布字段契约并由客户实例按自己的模板 ID 匹配',()=>{
+ const f=setup(),{store,instance}=f;try{
+  const created=store.management.saveWechatTemplateScheme({
+    productId:'detla',role:'ADMIN',scenario:'new_order',name:'管理员 · 新订单',templateHint:'新订单待处理',
+    fields:{thing1:'message',character_string2:'orderNo'},url:'https://client.example.com/order',status:'DRAFT'
+  },'owner')
+  assert.equal(created.version,1);assert.equal(created.status,'DRAFT')
+  let report=store.reportVersion(store.management.identity(instance,'owner'),'1.0.0')
+  let project=JSON.parse(Buffer.from(report.project.payload,'base64url'))
+  assert.deepEqual(project.wechatTemplates,{version:1,schemes:[]})
+  const active=store.management.saveWechatTemplateScheme({...created,productId:'detla',role:'ADMIN',scenario:'new_order',name:'管理员 · 新订单',fields:{thing1:'message'},status:'ACTIVE'},'owner',created.id)
+  assert.equal(active.version,2)
+  report=store.reportVersion(store.management.identity(instance,'owner'),'1.0.0')
+  project=JSON.parse(Buffer.from(report.project.payload,'base64url'))
+  assert.equal(project.wechatTemplates.schemes.length,1);assert.equal(project.wechatTemplates.schemes[0].fields.thing1,'message')
+  assert.equal(project.wechatTemplates.schemes[0].templateId,undefined)
+  assert.throws(()=>store.management.saveWechatTemplateScheme({productId:'detla',role:'ADMIN',scenario:'new_order',name:'重复',fields:{thing1:'message'}},'owner'),/已经有模板方案/)
+  assert.throws(()=>store.management.saveWechatTemplateScheme({productId:'detla',role:'ADMIN',scenario:'order_status',name:'非法字段',fields:{bad_field:'message'}},'owner'),/不是微信官方支持的类型/)
+ }finally{f.close()}
+})
 test('a test message accepts comma or semicolon recipient lists and removes duplicate addresses',()=>{
  const f=setup(),{store}=f;try{
   store.management.saveMailSettings({enabled:true,host:'smtp.example.com',port:465,security:'TLS',username:'sender@example.com',password:'fake-secret',from:'sender@example.com',operatorEmails:['ops@example.com']},'owner')

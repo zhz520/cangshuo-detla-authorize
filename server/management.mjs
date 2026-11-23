@@ -110,6 +110,7 @@ export class Management {
       CREATE TABLE IF NOT EXISTS sms_package_checkout_sessions (token_hash TEXT PRIMARY KEY, package_order_id TEXT NOT NULL REFERENCES sms_package_orders(id), expires_at INTEGER NOT NULL, created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS sms_package_payments (id TEXT PRIMARY KEY, package_order_id TEXT NOT NULL UNIQUE REFERENCES sms_package_orders(id), out_trade_no TEXT NOT NULL UNIQUE, method TEXT NOT NULL, openid TEXT, prepay_id TEXT, transaction_id TEXT UNIQUE, amount_cents INTEGER NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, paid_at TEXT);
       CREATE TABLE IF NOT EXISTS sms_request_nonces (instance_id TEXT NOT NULL, nonce TEXT NOT NULL, expires_at INTEGER NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(instance_id,nonce));
+      CREATE TABLE IF NOT EXISTS wechat_template_schemes (id TEXT PRIMARY KEY, product_id TEXT NOT NULL REFERENCES products(id), role TEXT NOT NULL, scenario TEXT NOT NULL, name TEXT NOT NULL, template_hint TEXT NOT NULL DEFAULT '', fields TEXT NOT NULL, url TEXT NOT NULL DEFAULT '', miniprogram TEXT NOT NULL DEFAULT '{}', version INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'DRAFT', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(product_id,role,scenario));
       CREATE INDEX IF NOT EXISTS idx_sms_requests_project_status_time ON sms_requests(project_id,status,created_at);
       CREATE INDEX IF NOT EXISTS idx_sms_ledger_project_time ON sms_ledger(project_id,created_at);
     `)
@@ -165,7 +166,82 @@ export class Management {
       const latest = latestByProduct.get(row.product_id) || null
       return {...row,maintenance_until:row.project_maintenance_until,domains:JSON.parse(row.domains),payment_methods:JSON.parse(row.payment_methods||'[]'),latest_version:latest,update_available:!!(latest && row.client_version && compareVersions(latest,row.client_version)>0)}
     })
-    return {products,projects,releases,instances,paymentProviders:this.paymentProviders(),mailSettings:this.mailSettings(),mailQueue:this.db.prepare('SELECT id,project_id,event,recipient,subject,status,attempts,next_attempt_at,last_error,created_at,sent_at FROM mail_queue ORDER BY created_at DESC LIMIT 200').all()}
+    return {products,projects,releases,instances,wechatTemplateSchemes:this.wechatTemplateSchemes(),paymentProviders:this.paymentProviders(),mailSettings:this.mailSettings(),mailQueue:this.db.prepare('SELECT id,project_id,event,recipient,subject,status,attempts,next_attempt_at,last_error,created_at,sent_at FROM mail_queue ORDER BY created_at DESC LIMIT 200').all()}
+  }
+  wechatTemplateSchemes(productId = null) {
+    const rows = productId
+      ? this.db.prepare('SELECT * FROM wechat_template_schemes WHERE product_id=? ORDER BY role,scenario').all(productId)
+      : this.db.prepare('SELECT s.*,p.name AS product_name FROM wechat_template_schemes s JOIN products p ON p.id=s.product_id ORDER BY s.product_id,s.role,s.scenario').all()
+    return rows.map(row => ({...row,fields:JSON.parse(row.fields||'{}'),miniprogram:JSON.parse(row.miniprogram||'{}')}))
+  }
+  wechatTemplateScheme(id) {
+    const row=this.db.prepare('SELECT * FROM wechat_template_schemes WHERE id=?').get(id)
+    return row?{...row,fields:JSON.parse(row.fields||'{}'),miniprogram:JSON.parse(row.miniprogram||'{}')}:null
+  }
+  clientWechatTemplates(productId) {
+    return {version:1,schemes:this.wechatTemplateSchemes(productId).filter(row=>row.status==='ACTIVE').map(row=>({id:row.id,role:row.role,scenario:row.scenario,name:row.name,templateHint:row.template_hint,fields:row.fields,url:row.url,miniprogram:row.miniprogram,version:row.version}))}
+  }
+  saveWechatTemplateScheme(body, actor, id = null) {
+    const productId = identifier(body.productId || DEFAULT_PRODUCT, '软件编号')
+    if (!this.db.prepare('SELECT id FROM products WHERE id=?').get(productId)) fail('软件不存在',404)
+    const role = String(body.role || '').trim().toUpperCase()
+    if (!['USER','PLAYER','ADMIN','CS'].includes(role)) fail('通知角色不正确')
+    const scenario = String(body.scenario || '').trim().toLowerCase()
+    if (!['new_order','order_status','refund_status','complaint_status','staff_review'].includes(scenario)) fail('通知场景不正确')
+    const name = text(body.name, '模板方案名称', 80)
+    const templateHint = String(body.templateHint || '').trim()
+    if (templateHint.length > 160) fail('微信模板标题提示最多 160 字符')
+    const fields = this.wechatTemplateFields(body.fields)
+    const url = String(body.url || '').trim()
+    if (url) this.wechatTemplateUrl(url)
+    let miniprogram = body.miniprogram && typeof body.miniprogram === 'object' && !Array.isArray(body.miniprogram) ? body.miniprogram : {}
+    const miniAppId = String(miniprogram.appid || '').trim(), miniPagepath = String(miniprogram.pagepath || '').trim()
+    if (miniAppId || miniPagepath) {
+      if (!/^[A-Za-z0-9_-]{2,64}$/.test(miniAppId) || !miniPagepath || miniPagepath.length > 200) fail('小程序 AppID 和页面路径需要同时填写且格式正确')
+      miniprogram = {appid:miniAppId,pagepath:miniPagepath}
+    } else miniprogram = {}
+    const status = String(body.status || 'DRAFT').toUpperCase()
+    if (!['DRAFT','ACTIVE'].includes(status)) fail('模板方案状态不正确')
+    return this.store.transaction(() => {
+      const current = id ? this.db.prepare('SELECT * FROM wechat_template_schemes WHERE id=?').get(id) : null
+      if (id && !current) fail('模板方案不存在',404)
+      const duplicate = this.db.prepare('SELECT id FROM wechat_template_schemes WHERE product_id=? AND role=? AND scenario=? AND id<>?').get(productId,role,scenario,id||'')
+      if (duplicate) fail('该软件、角色和场景已经有模板方案',409)
+      const nextId = id || randomUUID(), version = current ? current.version + 1 : 1
+      this.db.prepare(`INSERT INTO wechat_template_schemes(id,product_id,role,scenario,name,template_hint,fields,url,miniprogram,version,status,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,template_hint=excluded.template_hint,fields=excluded.fields,url=excluded.url,miniprogram=excluded.miniprogram,version=excluded.version,status=excluded.status,updated_at=excluded.updated_at`)
+        .run(nextId,productId,role,scenario,name,templateHint,JSON.stringify(fields),url,JSON.stringify(miniprogram),version,status,current?.created_at||stamp(),stamp())
+      this.store.audit(actor,current?'UPDATE_WECHAT_TEMPLATE_SCHEME':'CREATE_WECHAT_TEMPLATE_SCHEME',nextId,{productId,role,scenario,version,status})
+      return this.wechatTemplateScheme(nextId)
+    })
+  }
+  deleteWechatTemplateScheme(id, actor) {
+    const row = this.db.prepare('SELECT * FROM wechat_template_schemes WHERE id=?').get(id)
+    if (!row) fail('模板方案不存在',404)
+    return this.store.transaction(() => {
+      this.db.prepare('DELETE FROM wechat_template_schemes WHERE id=?').run(id)
+      this.store.audit(actor,'DELETE_WECHAT_TEMPLATE_SCHEME',id,{productId:row.product_id,role:row.role,scenario:row.scenario})
+      return {id}
+    })
+  }
+  wechatTemplateFields(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) fail('请配置模板字段映射')
+    const entries = Object.entries(value)
+    if (!entries.length || entries.length > 20) fail('模板字段映射须为 1 至 20 项')
+    const result = {}, prefixes = ['thing','character_string','time','amount','phone_number','car_number','const']
+    for (const [rawKey, rawSource] of entries) {
+      const key = String(rawKey || '').trim(), source = String(rawSource || '').trim()
+      if (!/^[A-Za-z_]+[0-9]*$/.test(key) || !prefixes.some(prefix => key.startsWith(prefix))) fail(`模板字段 ${key || '(空)'} 不是微信官方支持的类型`)
+      if (!/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(source)) fail(`模板字段 ${key} 的系统数据源格式不正确`)
+      if (Object.hasOwn(result,key)) fail(`模板字段 ${key} 重复`)
+      result[key] = source
+    }
+    return result
+  }
+  wechatTemplateUrl(value) {
+    let url
+    try { url = new URL(value) } catch { fail('模板跳转链接必须是有效的 HTTP/HTTPS 地址') }
+    if (!['http:','https:'].includes(url.protocol) || !url.hostname || url.username || url.password || url.hash || value.length > 2000) fail('模板跳转链接必须是有效的 HTTP/HTTPS 地址')
   }
   saveProduct(id, body, actor) {
     id = identifier(id || body.id,'软件编号'); const name = text(body.name,'软件名称',80), repository = repositoryName(body.repository)
@@ -248,7 +324,7 @@ export class Management {
     const featureExpiresAt = Object.fromEntries(grants.map(row=>[row.module_id,row.valid_until]))
     const license=this.reconcileLicense(instanceId)
     const licenseId=license?JSON.parse(Buffer.from(license.payload,'base64url')).licenseId:null
-    const project = this.signed('cangshuo-project-v1',{customerId:instance.customer_id,projectId:instance.project_id,productId:instance.product_id,instanceId,licenseId,issuedAt:stamp(),maintenanceUntil:instance.until_at,status:instance.status,pausePolicy:instance.pause_policy,allowedDomains:JSON.parse(instance.domains),payment,featureEnabled,featureStartsAt,featureExpiresAt})
+    const project = this.signed('cangshuo-project-v1',{customerId:instance.customer_id,projectId:instance.project_id,productId:instance.product_id,instanceId,licenseId,issuedAt:stamp(),maintenanceUntil:instance.until_at,status:instance.status,pausePolicy:instance.pause_policy,allowedDomains:JSON.parse(instance.domains),payment,featureEnabled,featureStartsAt,featureExpiresAt,wechatTemplates:this.clientWechatTemplates(instance.product_id)})
     return {project,license,updates:this.clientUpdates(instance.product_id,version)}
   }
   identity(instanceId,actor) {

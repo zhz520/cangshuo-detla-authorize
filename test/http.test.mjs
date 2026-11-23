@@ -14,6 +14,12 @@ test('operations HTTP routes support a complete isolated customer/project/licens
   await call('/health');await call('/api/session');await call('/api/data','GET',undefined,401)
   const login=await call('/api/login','POST',{username:'owner',password:'HTTP-test-only-password-2026'});cookie=login.response.headers.get('set-cookie').split(';')[0];csrf=login.result.csrf
   await call('/api/data');await call('/api/public-key')
+  const scheme=(await call('/api/wechat-template-schemes','POST',{productId:'detla',role:'ADMIN',scenario:'new_order',name:'管理员 · 新订单',templateHint:'新订单待处理',fields:{thing1:'message'},status:'ACTIVE'},201)).result
+  const schemes=(await call('/api/wechat-template-schemes?productId=detla')).result
+  assert.equal(schemes.find(row=>row.id===scheme.id).fields.thing1,'message')
+  await call('/api/wechat-template-schemes/'+scheme.id,'PUT',{productId:'detla',role:'ADMIN',scenario:'new_order',name:'管理员 · 新订单',fields:{thing1:'message',amount2:'amount'},status:'ACTIVE'})
+  await call('/api/wechat-template-schemes/'+scheme.id,'DELETE')
+  assert.equal((await call('/api/wechat-template-schemes')).result.length,0)
   await call('/api/customers','POST',{id:'http-customer',name:'接口测试'},201)
   await call('/api/customers/http-customer','PUT',{name:'更新名称',note:'隔离测试',status:'ACTIVE'})
   await call('/api/products','POST',{id:'other',name:'其他网站',kind:'WEB'},201)
